@@ -1,0 +1,33 @@
+/* Import your original CSS */
+.editor-container {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+}
+
+.line-numbers {
+  width: 50px;
+  text-align: right;
+  padding-right: 5px;
+  padding-left: 5px;
+  user-select: none;
+  border: 1px solid black;
+  border-right: none;
+  overflow: hidden;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.line-numbers::-webkit-scrollbar {
+  display: none;
+}
+
+.line-number {
+  margin: 0;
+  display: block;
+}
+
+.editor-wrapper {
+  flex-grow: 1;
+}
