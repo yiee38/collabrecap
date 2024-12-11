@@ -124,12 +124,12 @@ const Dashboard = () => {
                   <div className="flex gap-2 items-center">
                     <input
                       readOnly
-                      value={`${window.location.origin}/room/${room.id}/candidate`}
+                      value={ `${window.location.origin}/room/213/${room.id}/interviewee`}
                       className="flex-1 px-3 py-2 border rounded-md text-sm"
                     />
                     <button
                       onClick={() => copyToClipboard(
-                        `${window.location.origin}/room/${room.id}/candidate`
+                        `${window.location.origin}/room/213/${room.id}/interviewee`
                       )}
                       className="p-2 text-blue-600 hover:text-blue-800"
                     >

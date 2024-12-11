@@ -26,6 +26,11 @@ class SocketService {
     this.socket.emit('room:join', { roomId, userId, role });
   }
 
+  pushNote(note, lineNumbers) {
+    console.log('pushNote:', note, lineNumbers);
+    this.socket.emit('note:add', { note, lineNumbers });
+  }
+
   onRoomStatus(callback) {
     this.socket.on('room:status', callback);
   }

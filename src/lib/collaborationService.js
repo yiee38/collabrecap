@@ -1,4 +1,3 @@
-// collaborationService.js
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { yCollab } from 'y-codemirror.next';
@@ -12,6 +11,9 @@ class CollaborationService {
     this.role = role;
     this.isReplaying = false;
     this.replayController = null;
+    this.lastAppliedTime = 0;
+    this.updateDebounceTimeout = null;
+    this.isUpdating = false;
     
     // Connect to your websocket server
     this.provider = new WebsocketProvider(
@@ -26,7 +28,7 @@ class CollaborationService {
     this.yTimeline = this.doc.getMap('timeline');
 
     if (!this.yState.get('status')) {
-      this.yState.set('status', 'waiting'); // waiting -> active -> ended
+      this.yState.set('status', 'waiting');
     }
     if (!this.yTimeline.get('currentTime')) {
       this.yTimeline.set('currentTime', 0);
@@ -41,39 +43,40 @@ class CollaborationService {
       this.yState.set('replayController', null);
     }
     
-    // Create the undo manager
     this.undoManager = new Y.UndoManager(this.yText);
 
     this.awareness = this.provider.awareness;
     
     let color = role === 'interviewer' ? '#E06C75' : '#56B6C2';
 
-    // Set local state for awareness
     this.awareness.setLocalState({
       user: {
         id: userId,
         role: role,
-        name: `User ${userId}`, // You can add actual username here
+        name: `User ${userId}`,
         color: color,
       },
-      timelineControl: false
+      timelineControl: false,
+      lastUpdate: 0
     });
 
-    
-    // Get the collaboration extensions
     this.extensions = [
-      yCollab(this.yText, this.provider.awareness),
-      // Enable undo/redo in collaboration
+      yCollab(this.yText, this.provider.awareness, {
+        onUpdate: () => {
+          // Only process updates if we're not currently updating
+          if (!this.isUpdating) {
+            this.undoManager.stopCapturing();
+          }
+        }
+      }),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          // Handle document changes
+        if (update.docChanged && !this.isUpdating) {
           this.undoManager.stopCapturing();
         }
       })
     ];
 
     this.timelineLock = false;
-
   }
 
   startInterview() {
@@ -110,17 +113,6 @@ class CollaborationService {
     return !this.isReplaying || this.replayController === this.userId;
   }
 
-  onReplayStateChange(callback) {
-    this.yState.observe(() => {
-      this.isReplaying = this.yState.get('isReplaying');
-      this.replayController = this.yState.get('replayController');
-      callback({
-        isReplaying: this.isReplaying,
-        controller: this.replayController
-      });
-    });
-  }
-
   // Timeline control methods
   async requestTimelineControl() {
     if (this.yTimeline.get('controlledBy')) {
@@ -150,20 +142,59 @@ class CollaborationService {
       return false;
     }
 
+    // Prevent duplicate updates within a short time window
+    if (time === this.lastAppliedTime) {
+      return false;
+    }
+
+    // Clear any pending update
+    if (this.updateDebounceTimeout) {
+      clearTimeout(this.updateDebounceTimeout);
+    }
+
     return new Promise((resolve) => {
-      // Add small delay to handle network lag
-      setTimeout(() => {
+      this.updateDebounceTimeout = setTimeout(() => {
+        this.isUpdating = true;
+        this.lastAppliedTime = time;
         this.yTimeline.set('currentTime', time);
+        
+        // Update awareness state to help prevent duplicate updates
+        this.awareness.setLocalState({
+          ...this.awareness.getLocalState(),
+          lastUpdate: Date.now()
+        });
+
+        this.isUpdating = false;
         resolve(true);
-      }, 50);
+      }, 30); // Debounce window
     });
   }
 
   onTimelineUpdate(callback) {
     this.yTimeline.observe(() => {
+      const currentTime = this.yTimeline.get('currentTime');
+      const controlledBy = this.yTimeline.get('controlledBy');
+      
+      // Only process the update if:
+      // 1. We're not the controller, or
+      // 2. This is a new time value we haven't processed yet
+      if (controlledBy !== this.userId || currentTime !== this.lastAppliedTime) {
+        this.lastAppliedTime = currentTime;
+        callback({
+          currentTime,
+          controlledBy
+        });
+      }
+    });
+  }
+
+  onReplayStateChange(callback) {
+    this.yState.observe(() => {
+      this.isReplaying = this.yState.get('isReplaying');
+      this.replayController = this.yState.get('replayController');
       callback({
-        currentTime: this.yTimeline.get('currentTime'),
-        controlledBy: this.yTimeline.get('controlledBy')
+        isReplaying: this.isReplaying,
+        controller: this.replayController
       });
     });
   }
@@ -182,7 +213,17 @@ class CollaborationService {
     return this.extensions;
   }
 
+  captureVersion() {
+    return {
+      content: this.yText.toString(),
+      timestamp: Date.now()
+    };
+  }
+
   destroy() {
+    if (this.updateDebounceTimeout) {
+      clearTimeout(this.updateDebounceTimeout);
+    }
     this.awareness.destroy();
     this.provider.destroy();
     this.doc.destroy();

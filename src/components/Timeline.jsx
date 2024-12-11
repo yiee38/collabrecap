@@ -1,9 +1,8 @@
 // Timeline.jsx
-import React from 'react';
+import React, { useCallback, useRef } from 'react';
 import { FaPlay, FaPause, FaArrowRotateLeft } from "react-icons/fa6";
 import { Button } from 'react-bootstrap';
-
-
+import { debounce } from 'lodash';
 
 const customStyle = {
   statusMessage: {
@@ -47,6 +46,10 @@ const Timeline = ({
   timelineController,
   userId
 }) => {
+  const seekInProgressRef = useRef(false);
+  const lastSeekTimeRef = useRef(0);
+  const MIN_SEEK_INTERVAL = 50;
+
   const formatTime = (ms) => {
     const minutes = Math.floor(ms / 60000);
     const seconds = Math.floor((ms % 60000) / 1000);
@@ -54,61 +57,91 @@ const Timeline = ({
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`;
   };
 
-  const renderControllerInfo = () => {
-    if (!timelineController) return null;
-    if (timelineController === userId) return null;
-    
-    // Get the role of the controller (opposite of current user's role)
-    const controllerRole = role === 'interviewer' ? 'interviewee' : 'interviewer';
-    return (
-      <div style={customStyle.controllerInfo}>
-        Timeline controlled by {controllerRole}
-      </div>
-    );
+  const debouncedSeek = useCallback(
+    debounce((value) => {
+      if (seekInProgressRef.current) return;
+      
+      const now = Date.now();
+      if (now - lastSeekTimeRef.current < MIN_SEEK_INTERVAL) return;
+      
+      seekInProgressRef.current = true;
+      lastSeekTimeRef.current = now;
+      
+      try {
+        onSeek({ target: { value } });
+      } finally {
+        setTimeout(() => {
+          seekInProgressRef.current = false;
+        }, MIN_SEEK_INTERVAL);
+      }
+    }, 30, { leading: true, trailing: true, maxWait: 100 }),
+    [onSeek]
+  );
+
+  const handleSeek = (e) => {
+    const value = parseInt(e.target.value);
+    debouncedSeek(value);
   };
+
+  const handleDragStart = async (e) => {
+    debouncedSeek.cancel();
+    seekInProgressRef.current = false;
+    lastSeekTimeRef.current = 0;
+    await onDragStart(e);
+  };
+
+  const handleDragEnd = async (e) => {
+    await onDragEnd(e);
+    debouncedSeek.flush();
+  };
+
+  const isControlDisabled = timelineController && timelineController !== userId;
 
   return (
     <div style={customStyle.timelineContainer}>
-      
-
-      {/* Controls */}
       <div style={customStyle.controls}>
-        <Button onClick={onTogglePlay } disabled={timelineController && timelineController !== userId}
+        <Button 
+          onClick={onTogglePlay} 
+          disabled={isControlDisabled}
         >
           {isPlaying ? <FaPause /> : <FaPlay />}
         </Button>
-        <Button onClick={onReset} disabled={timelineController && timelineController !== userId}
+        <Button 
+          onClick={onReset} 
+          disabled={isControlDisabled}
         >
           <FaArrowRotateLeft />
         </Button>
       </div>
 
-
+      <div style={customStyle.timeDisplay}>
+        <span>{formatTime(currentTime)}</span>
+        <span>{formatTime(duration)}</span>
+      </div>
       
-        <>
-          <div style={customStyle.timeDisplay}>
-            <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(duration)}</span>
-          </div>
-          <input
-            type="range"
-            min="0"
-            max={duration}
-            value={currentTime}
-            onChange={onSeek}
-            onMouseDown={onDragStart}
-            onMouseUp={onDragEnd}
-            onTouchStart={onDragStart}
-            onTouchEnd={onDragEnd}
-            disabled={timelineController && timelineController !== userId}
-            style={{ width: '100%' }}
-          />
-          <div style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '8px' }}>
-            {`Recorded ${operations.length} operations`}
-          </div>
-          {renderControllerInfo()}
-        </>
+      <input
+        type="range"
+        min="0"
+        max={duration}
+        value={currentTime}
+        onChange={handleSeek}
+        onMouseDown={handleDragStart}
+        onMouseUp={handleDragEnd}
+        onTouchStart={handleDragStart}
+        onTouchEnd={handleDragEnd}
+        disabled={isControlDisabled}
+        style={{ width: '100%' }}
+      />
       
+      <div style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '8px' }}>
+        {`Recorded ${operations.length} operations`}
+      </div>
+      
+      {timelineController && timelineController !== userId && (
+        <div style={customStyle.statusMessage}>
+          Timeline controlled by {role === 'interviewer' ? 'interviewee' : 'interviewer'}
+        </div>
+      )}
     </div>
   );
 };

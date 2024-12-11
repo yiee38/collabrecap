@@ -1,13 +1,38 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useImperativeHandle } from 'react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 import { FaLink } from 'react-icons/fa';
 import { FaUnlink } from "react-icons/fa";
+import { socketService } from '@/lib/socketService';
+import WarningDialog from './WarningDialog';
 import Quill from 'quill';
+
 import "./Note.css"
 
+class CustomTimestampBlot extends Quill.import('blots/inline') {
+  static create(value) {
+    const node = super.create();
+    node.setAttribute('data-timestamp', value.currentTime);
+    node.setAttribute('contenteditable', 'false');
+    return node;
+  }
 
-const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, formatTime, paddingTop }) => {
+  static value(node) {
+    return {
+      timestamp: node.getAttribute('data-timestamp')
+    };
+  }
+}
+
+CustomTimestampBlot.blotName = 'timestamp';
+CustomTimestampBlot.tagName = 'span';
+
+if (typeof window !== 'undefined') {  
+  Quill.register(CustomTimestampBlot);
+}
+
+
+const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, formatTime, paddingTop, onTimestampClick }) => {
 
 
   const getColor = (isLinked, state) => {
@@ -33,12 +58,20 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
     justifyContent: 'flex-end',
   };
 
+  const handleClick = () => {
+    if (roomState === 'ARCHIVED' && line.time) {
+      onTimestampClick(line.time);
+    } else {
+      onClick(line);
+    }
+  };
+
   switch (roomState) {
     case 'ACTIVE':
       return (
         <div 
           style={style}
-          onClick={onClick}
+          onClick={handleClick}
           onMouseEnter={() => setIsHovering(line.number)}
           onMouseLeave={() => setIsHovering(null)}
         >
@@ -57,6 +90,7 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
           style={{...style, cursor: line.time ? 'pointer' : 'default'}}
           onMouseEnter={() => setIsHovering(line.number)}
           onMouseLeave={() => setIsHovering(null)}
+          onClick={handleClick}
         >
           {isHovering === line.number && line.time ? formatTime(line.time) : line.number}
         </div>
@@ -67,7 +101,7 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
   }
 };
 
-const TimestampNotepad = ({ baseTimeRef, roomState }) => {
+const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, currentTime }) => {
   const [lineNumbers, setLineNumbers] = useState([]);
   const quillRef = useRef(null);
   const [value, setValue] = useState('');
@@ -77,6 +111,27 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
   const baseFontSize = useRef(0);
   const endTimeRef = useRef(null);
   const [isHovering, setIsHovering] = useState(-1);
+  const [isWarningOpen, setIsWarningOpen] = useState(false);
+  const [pendingLinkLine, setPendingLinkLine] = useState(null);
+  const [warningMessage, setWarningMessage] = useState('');
+
+
+  useImperativeHandle(ref, () => ({
+    setManualTimestamp: () => {
+      if (!quillRef.current) return;
+      const quillEditor = quillRef.current.getEditor();
+      const selection = quillEditor.getSelection();
+      if (!selection) return;
+
+      const [leaf] = quillEditor.getLeaf(selection.index);
+      const currentLine = leaf?.parent?.domNode;
+
+      if (currentLine) {
+        console.log(Date.now().toString());
+      }
+    }
+  }), []);
+
 
   useEffect(() => {
     if (roomState === 'ARCHIVED' && !endTimeRef.current) {
@@ -91,9 +146,11 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
     
     // After interview ended
     if (roomState === 'ARCHIVED' && timestamp > endTimeRef.current) {
-      const duration = endTimeRef.current - baseTimeRef.current;
-      const minutes = Math.floor(duration / 60000);
-      const seconds = Math.floor((duration % 60000) / 1000);
+      const maxTime = baseTimeRef.current + currentTime;
+      const effectiveTime = Math.min(timestamp, maxTime);
+      const relativeTime = effectiveTime - baseTimeRef.current;
+      const minutes = Math.floor(relativeTime / 60000);
+      const seconds = Math.floor((relativeTime % 60000) / 1000);
       return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
     }
     
@@ -103,25 +160,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
     const seconds = Math.floor((relativeTime % 60000) / 1000);
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
-
-  class CustomTimestampBlot extends Quill.import('blots/inline') {
-    static create(value) {
-      const node = super.create();
-      node.setAttribute('data-timestamp', value.currentTime);
-      node.setAttribute('contenteditable', 'false');
-      return node;
-    }
-
-    static value(node) {
-      return {
-        timestamp: node.getAttribute('data-timestamp')
-      };
-    }
-  }
-
-  CustomTimestampBlot.blotName = 'timestamp';
-  CustomTimestampBlot.tagName = 'span';
-  Quill.register(CustomTimestampBlot);
 
   useEffect(() => {
     if (quillRef.current) {
@@ -155,31 +193,57 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
       const line = editorLines[i];
       const content = line?.innerText || '';
       const hasContent = content.trim() !== '';
-      let linked = line.getAttribute('data-linked');
-      
 
       let lineData = {
         number: i + 1,
         height: line?.offsetHeight + 0.45 || basicLineHeight.current,
         content: content,
-        linked: linked,
+        linked: false
       };
 
       if (hasContent) {
-        let timestamp = parseInt(line.getAttribute('data-timestamp')) || Date.now();
-        if (roomState === 'ARCHIVED') {
-          timestamp = timestamp < baseTimeRef.current ? baseTimeRef.current : 
-                     timestamp > endTimeRef.current ? endTimeRef.current : 
-                     timestamp;
+        let timestamp = line.getAttribute('data-timestamp');
+        
+        if (!timestamp) {
+          /*
+          timestamp = Date.now().toString();
+          line.setAttribute('data-timestamp', timestamp);
+          line.setAttribute('data-linked', 'true');
+*/
+          if (roomState === 'ARCHIVED') {
+            timestamp = (baseTimeRef.current + currentTime).toString();
+          } else {
+            timestamp = Date.now().toString();
+          }
+          line.setAttribute('data-timestamp', timestamp);
+          line.setAttribute('data-linked', 'true');
         }
-        line?.setAttribute('data-timestamp', timestamp);
-        lineData.time = timestamp;
-        line?.setAttribute('data-linked', true);
+
+        let parsedTimestamp = parseInt(timestamp);
+        if (roomState === 'ARCHIVED') {
+          const maxTime = baseTimeRef.current + currentTime;
+          parsedTimestamp = parsedTimestamp < baseTimeRef.current ? baseTimeRef.current : 
+                           parsedTimestamp > maxTime ? maxTime : 
+                           parsedTimestamp;
+        }
+
+        lineData.time = parsedTimestamp;
         lineData.linked = true;
+      } else {
+        line?.removeAttribute('data-timestamp');
+        line?.removeAttribute('data-linked');
       }
+      
 
       newLineNumbers.push(lineData);
+
+      
+      
     }
+    if (!socketService.socket?.connected) {
+      socketService.connect(process.env.NEXT_PUBLIC_SOCKET_URL);
+    }
+    socketService.pushNote(quillEditor.getText(), newLineNumbers);
     
     setLineNumbers(newLineNumbers);
   };
@@ -187,7 +251,26 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
   const handleLineClick = (line) => {
     if (line.time && (roomState === 'ACTIVE' || roomState === 'ARCHIVED')) {
       console.log(`Clicked timestamp: ${formatTime(line.time)}`);
+      setWarningMessage(`Are you sure you want to unlink the timestamp at ${formatTime(line.time)}?`);
+      setIsWarningOpen(true);
+      setPendingLinkLine(line);
+      
     }
+    else {
+      console.log(`Clicked line: ${line.number} add time: ${formatTime(Date.now())}`);
+    }
+  };
+
+ 
+  const handleConfirmLink = () => {
+    if (pendingLinkLine) {
+      // Perform the actual unlink operation here
+      console.log(`Linked/Unlinked timestamp: ${formatTime(pendingLinkLine.time)}`);
+      // Update your line numbers state accordingly
+    }
+    setIsWarningOpen(false);
+    setWarningMessage('');
+    setPendingLinkLine(null);
   };
 
   const containerStyle = {
@@ -237,7 +320,7 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
                   onClick={() => handleLineClick(line)}
                   formatTime={formatTime}
                   paddingTop = {paddingTop}
-
+                  onTimestampClick={onTimestampClick}
                   onMouseEnter={() => setIsHovering(true)}
                   onMouseLeave={() => setIsHovering(false)}
                 />)
@@ -248,7 +331,7 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
           <div className="editor-wrapper" style={{ height: '100%' }}>
             <ReactQuill
               ref={quillRef}
-              value={value}
+              value={value || '\n'}
               onChange={setValue}
               theme="snow"
               modules={{ toolbar: false }}
@@ -257,6 +340,12 @@ const TimestampNotepad = ({ baseTimeRef, roomState }) => {
           </div>
         </div>
       </div>
+      <WarningDialog 
+        isOpen={isWarningOpen}
+        onClose={() => setIsWarningOpen(false)}
+        onConfirm={handleConfirmLink}
+        message={warningMessage}
+      />
     </div>
   );
 };

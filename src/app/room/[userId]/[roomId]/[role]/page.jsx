@@ -7,50 +7,35 @@ import CodeEditor from '@/components/CodeEditor';
 import Timeline from '@/components/Timeline';
 import NotePad from '@/components/Notepad';
 import CollaborationService from '@/lib/collaborationService';
-import { Button } from 'react-bootstrap';
+import { Button } from '@/components/ui/button';
 
 const INTERVAL_MS = 50;
 
-export default function InterviewRoom() {
-  // Get params from Next.js dynamic route
+const InterviewRoom = () => {
   const params = useParams();
   const roomId = params.roomId;
   const userId = params.userId;
   const role = params.role;
 
+  // Room and connection state
   const [roomState, setRoomState] = useState('CREATED');
   const [isConnected, setIsConnected] = useState(false);
+  
+  // Timeline and playback state
   const [operations, setOperations] = useState([]);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [timelineController, setTimelineController] = useState(null);
   
+  // Refs for timing management
   const startTimeRef = useRef(null);
   const endTimeRef = useRef(null);
   const playIntervalRef = useRef(null);
   const collaborationRef = useRef(null);
   const lastUpdateRef = useRef(null);
+  const notepadRef = useRef(null);
 
-  const containerStyle = {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '3px',
-    overflow: 'hidden'
-  };
-
-  const editorContainerStyle = {
-    display: 'flex',
-    flexDirection: 'row',
-    width: '500px',
-    padding: '33px 16px',
-    border: '1px solid #ddd',
-    borderRadius: '4px',
-    backgroundColor: '#fff'
-  };
-
-  // Your existing useEffect and other functions remain largely the same
-  // Just update socket connection to use environment variables
   useEffect(() => {
     if (!socketService.socket?.connected) {
       socketService.connect(process.env.NEXT_PUBLIC_SOCKET_URL);
@@ -58,13 +43,33 @@ export default function InterviewRoom() {
     
     socketService.joinRoom(roomId, userId, role);
     
+    socketService.socket.on('connect', () => {
+      setIsConnected(true);
+    });
+
+    socketService.socket.on('disconnect', () => {
+      setIsConnected(false);
+    });
+    
+    // Handle room status updates
     socketService.onRoomStatus((room) => {
       setRoomState(room.state);
       if (room.state === 'ACTIVE' && !startTimeRef.current) {
         startTimeRef.current = Date.now();
+      } else if (room.state === 'ARCHIVED' && room.endTime) {
+        endTimeRef.current = room.endTime;
+        setDuration(room.duration || (room.endTime - startTimeRef.current));
       }
     });
 
+    // Handle explicit room end event
+    socketService.socket.on('room:ended', ({ endTime, duration }) => {
+      endTimeRef.current = endTime;
+      setDuration(duration);
+      setRoomState('ARCHIVED');
+    });
+
+    // Initialize collaboration service
     collaborationRef.current = new CollaborationService(roomId, userId, role);
 
     collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy }) => {
@@ -72,10 +77,6 @@ export default function InterviewRoom() {
         setCurrentTime(currentTime);
       }
       setTimelineController(controlledBy);
-    });
-
-    collaborationRef.current.onReplayStateChange(({ isReplaying, controller }) => {
-      // Update UI state if needed
     });
 
     return () => {
@@ -96,9 +97,7 @@ export default function InterviewRoom() {
 
   const endInterview = async () => {    
     if (role === 'interviewer') {
-      let newDuration = Date.now() - startTimeRef.current;
-      endTimeRef.current = Date.now();
-      setDuration(newDuration);
+      const newDuration = Date.now() - startTimeRef.current;
       await collaborationRef.current?.requestTimelineControl();
       collaborationRef.current?.updateTimeline(newDuration);
 
@@ -106,7 +105,7 @@ export default function InterviewRoom() {
         roomId, 
         userId,
         operations,
-        newDuration 
+        duration: newDuration 
       });
       collaborationRef.current?.releaseTimelineControl();
     }
@@ -185,78 +184,123 @@ export default function InterviewRoom() {
     collaborationRef.current?.releaseTimelineControl();
   };
 
+  const addNoteAnchor = () => {
+    notepadRef.current?.setManualTimestamp();
+  };
+
+  const handleTimestampClick = async (timestamp) => {
+    if (roomState === 'ARCHIVED') {
+      await collaborationRef.current?.requestTimelineControl();
+      const seekTime = timestamp - startTimeRef.current;
+      setCurrentTime(seekTime);
+      collaborationRef.current?.updateTimeline(seekTime);
+      collaborationRef.current?.releaseTimelineControl();
+    }
+  };
 
   return (
     <div className="flex flex-col w-full h-full items-center justify-center">
-      <div className="status-bar">
-        Room State: {roomState}
+      <div className="flex items-center gap-4 mb-4">
+        <span className={`inline-block w-3 h-3 rounded-full ${
+          isConnected ? 'bg-green-500' : 'bg-red-500'
+        }`} />
+        <span className="text-sm text-gray-600">
+          {isConnected ? 'Connected' : 'Disconnected'}
+        </span>
+        <span className="text-sm text-gray-600">
+          Room State: {roomState}
+        </span>
       </div>
 
-      <div className="flex flex-col w-full h-full items-center justify-center">
-        <h4 className="mb-0 pb-0">
-          You are: {role === "interviewer" ? "Interviewer": "Candidate"}
-        </h4>
-        <div className="flex flex-col pt-10">
-          <div className="flex flex-row gap-5">
-            <CodeEditor
-              isInterviewActive={roomState === 'ACTIVE'}
-              interviewStartTime={startTimeRef.current}
-              onOperationsUpdate={handleOperationsUpdate}
-              isPlaying={isPlaying}
-              onSeek={handleSeek}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-              currentTimeOverride={currentTime}
-              roomId={roomId}
-              userId={userId}
-              role={role}
-            />
+      <h4 className="mb-0 pb-0">
+        You are: {role === "interviewer" ? "Interviewer" : "Candidate"}
+      </h4>
+
+      <div className="flex flex-col pt-10">
+        <div className="flex flex-row gap-5">
+          <CodeEditor
+            isInterviewActive={roomState === 'ACTIVE'}
+            interviewStartTime={startTimeRef.current}
+            onOperationsUpdate={handleOperationsUpdate}
+            isPlaying={isPlaying}
+            onSeek={handleSeek}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            currentTimeOverride={currentTime}
+            roomId={roomId}
+            userId={userId}
+            role={role}
+          />
+
           {role === 'interviewer' ? (
             <NotePad 
               baseTimeRef={startTimeRef}
               roomState={roomState}
               endTimeRef={endTimeRef}
+              ref={notepadRef}
+              onTimestampClick={handleTimestampClick}
+              currentTime={currentTime} 
             />
           ) : (
             <div className="flex flex-col gap-3 overflow-hidden">
               <div className="flex flex-row w-[500px] px-8 py-8 border border-gray-200 rounded-lg bg-white">
                 <div className="w-full h-[450px]">
-                  "Placeholder for tabs"
-                  
+                  Placeholder for candidate view
                 </div>
               </div>
             </div>
           )}
-
         </div>
-        
 
-        {/* Controls */}
-        {roomState === 'CREATED' && (
-          <Button onClick={startInterview}>Start Interview</Button>
-        )}
-        {roomState === 'ACTIVE' && (
-          <Button onClick={endInterview}>End Interview</Button>
-        )}
-        {roomState === 'ARCHIVED' && (
-          <Timeline
-            currentTime={currentTime}
-            duration={duration}
-            isPlaying={isPlaying}
-            isInterviewActive={roomState === 'ACTIVE'}
-            operations={operations}
-            onSeek={handleSeek}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            onTogglePlay={togglePlayback}
-            onReset={reset}
-            role={role}
-            timelineController={timelineController}
-            userId={userId}
-          />
-        )}
+        <div className="flex flex-col gap-2 mt-4">
+          {roomState === 'CREATED' && role === 'interviewer' && (
+            <Button 
+              onClick={startInterview}
+              disabled={!isConnected}
+              variant="default"
+            >
+              Start Interview
+            </Button>
+          )}
+
+          {roomState === 'ACTIVE' && role === 'interviewer' && (
+            <>
+              <Button 
+                onClick={addNoteAnchor}
+                variant="secondary"
+              >
+                Add Note Anchor
+              </Button>
+              <Button 
+                onClick={endInterview}
+                variant="destructive"
+              >
+                End Interview
+              </Button>
+            </>
+          )}
+
+          {roomState === 'ARCHIVED' && (
+            <Timeline
+              currentTime={currentTime}
+              duration={duration}
+              isPlaying={isPlaying}
+              isInterviewActive={roomState === 'ACTIVE'}
+              operations={operations}
+              onSeek={handleSeek}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onTogglePlay={togglePlayback}
+              onReset={reset}
+              role={role}
+              timelineController={timelineController}
+              userId={userId}
+            />
+          )}
         </div>
       </div>
     </div>
   );
-}
+};
+
+export default InterviewRoom;

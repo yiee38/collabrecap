@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const WebSocket = require('ws');
 const { setupWSConnection } = require('y-websocket/bin/utils');
 const url = require('url');  // You'll need this for pathname parsing
+const {MongoClient} = require('mongodb');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });  // Load root .env
 require('dotenv').config({ path: path.join(__dirname, '.env') });    
@@ -28,7 +29,8 @@ const wss = new WebSocket.Server({
   noServer: true,
   verifyClient: ({origin}, cb) => {
     const allowedOrigins = [process.env.NEXT_PUBLIC_CLIENT_URL || "http://localhost:3000"]; 
-    const isAllowed = origin === allowedOrigins;
+    const isAllowed = allowedOrigins.includes(origin);
+
     cb(isAllowed, 403, 'Origin not allowed');
   }
 });
@@ -44,17 +46,15 @@ httpServer.on('upgrade', (request, socket, head) => {
 });
 
 wss.on('connection', (conn, req) => {
-  // Parse the room from the URL
   const pathname = url.parse(req.url).pathname;
   const roomMatch = pathname.match(/\/yjs\/([^\/]+)/);
   const room = roomMatch ? roomMatch[1] : '';
 
+
   console.log('Yjs client connecting to room:', room);
 
-  // Set binary type explicitly
   conn.binaryType = 'nodebuffer';
 
-  // Error handling for the connection
   conn.on('error', (error) => {
     console.error('WebSocket error:', error);
   });
@@ -84,6 +84,10 @@ wss.on('connection', (conn, req) => {
   }
 });
 
+// Mongodb set up
+const connectionString = process.env.ATLAS_URI || "";
+const client = new MongoClient(connectionString);
+
 // In-memory store for active rooms
 const activeRooms = new Map();
 
@@ -104,6 +108,8 @@ class Room {
     this.codeOperations = [];
     this.notes = [];
     this.participants = new Set();
+    this.note = '';
+    this.lineNumber = [];
   }
 
   canJoin(userId, role) {
@@ -184,7 +190,11 @@ class Room {
       startedAt: this.startedAt,
       endedAt: this.endedAt,
       codeOperations: this.codeOperations,
-      notes: this.notes
+      notes: this.notes,
+      note: this.note,
+      lineNumber: this.lineNumber,
+      participants: Array.from(this.participants),
+      roles: this.roles,
     };
   }
 
@@ -199,168 +209,200 @@ class Room {
     return true;
   }
 
-  addNote(note) {
+  addNote(note, lineNumber) {
     if (this.state !== 'ACTIVE') return false;
     
-    const timestamp = Date.now() - this.startedAt;
+    //const timestamp = Date.now() - this.startedAt;
+    this.note = note;
+    this.lineNumber = lineNumber;
+    /*
     this.notes.push({
       ...note,
       timestamp
     });
+    */
     return true;
   }
 }
 
-// Socket.IO event handlers
-io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
-  socket.data = {
-    userId: null,
-    roomId: null,
-    role: null
-  };
-  
-  // Create new room
-  socket.on('room:create', ({ userId }) => {
-    const roomId = uuidv4();
-    const room = new Room(roomId, userId);
-    activeRooms.set(roomId, room);
-    
-    socket.emit('room:created', { roomId, room: room.serialize() });
-  });
+client.connect().then(async () => {
+  console.log('Connected to MongoDB');
+  const db = client.db("collabrecap");
 
-  // Join room
-  socket.on('room:join', ({ roomId, userId, role }) => {
-    const room = activeRooms.get(roomId);
-
+  io.on('connection', (socket) => {
+    console.log('Client connected:', socket.id);
+    socket.data = {
+      userId: null,
+      roomId: null,
+      role: null
+    };
     
-    if (!room) {
-      socket.emit('error', { 
-        type: 'ROOM_ERROR',
-        message: 'Room not found' 
-      });
-      return;
-    }
-
-    socket.data.userId = userId;
-    socket.data.roomId = roomId;
-    socket.data.role = role;
-    
-    // Check if can join
-    const joinCheck = room.canJoin(userId, role);
-    if (!joinCheck.allowed) {
-      socket.emit('error', { 
-        type: 'JOIN_ERROR',
-        message: joinCheck.reason 
-      });
-      return;
-    }
-
-    // All checks passed, proceed with join
-    socket.join(roomId);
-    room.addParticipant(userId);
-    room.assignRole(userId, role);
-    
-    // Notify all room participants of the new state
-    io.to(roomId).emit('room:status', {
-      ...room.serialize(),
-      participants: Array.from(room.participants),
-      roles: room.roles
+    // Create new room
+    socket.on('room:create', ({ userId }) => {
+      const roomId = uuidv4();
+      const room = new Room(roomId, userId);
+      activeRooms.set(roomId, room);
+      room.assignRole(userId, 'interviewer');
+      
+      socket.emit('room:created', { roomId, room: room.serialize() });
     });
-
-    // Optional: Notify others that someone joined
-    socket.to(roomId).emit('room:user_joined', {
-      userId,
-      role,
-      timestamp: Date.now()
-    });
-  });
-
-  // Start interview
-  socket.on('room:start', ({ roomId, userId }) => {
-    const room = activeRooms.get(roomId);
-    
-    if (!room || room.interviewerId !== userId) {
-      socket.emit('error', { message: 'Unauthorized' });
-      return;
-    }
-
-    if (room.start()) {
-      io.to(roomId).emit('room:status', room.serialize());
-    }
-  });
-
-
-  // Handle room end
-  socket.on('room:end', ({ roomId, userId, operations, duration }) => {
-    const room = activeRooms.get(roomId);
-    
-    if (!room || room.interviewerId !== userId) {
-      socket.emit('error', { message: 'Unauthorized' });
-      return;
-    }
   
-    // Archive the room with the recorded operations
-    const archived = room.archive();
-    
-    // Send the updated status to all clients in the room
-    io.to(roomId).emit('room:status', archived);
-  });
-
-  // Handle code changes
-  socket.on('code:change', ({ roomId, operation }) => {
-    const room = activeRooms.get(roomId);
-    
-    if (room?.addCodeOperation(operation)) {
-      socket.to(roomId).emit('code:sync', operation);
-    }
-  });
-
-  // Handle notes
-  socket.on('note:add', ({ roomId, userId, note }) => {
-    const room = activeRooms.get(roomId);
-    
-    if (room?.interviewerId === userId && room.addNote(note)) {
-      io.to(roomId).emit('note:sync', note);
-    }
-  });
-
-  // WebRTC signaling
-  socket.on('webrtc:signal', ({ roomId, signal }) => {
-    socket.to(roomId).emit('webrtc:signal', signal);
-  });
-
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-
-    const { userId, roomId, role } = socket.data;
-    
-    if (userId && roomId) {
+    // Join room
+    socket.on('room:join', ({ roomId, userId, role }) => {
       const room = activeRooms.get(roomId);
-      if (room) {
-        // If room is ACTIVE, archive it immediately when anyone disconnects
-        if (room.state === 'ACTIVE') {
-          const archived = room.archive();
-          io.to(roomId).emit('room:status', archived);
-          //TODO save room to database then delete
-          //activeRooms.delete(roomId);
-        }
-        // Only handle role cleanup and updates for non-active rooms
-        if (role === 'interviewer' && room.roles.interviewer === userId) {
-          room.roles.interviewer = null;
-        }
-        if (role === 'interviewee' && room.roles.interviewee === userId) {
-          room.roles.interviewee = null;
-        }
-
-        console.log(room.participants);
-        console.log(userId)
-        room.removeParticipant(userId);
+  
+      
+      if (!room) {
+        socket.emit('error', { 
+          type: 'ROOM_ERROR',
+          message: 'Room not found' 
+        });
+        return;
+      }
+  
+      socket.data.userId = userId;
+      socket.data.roomId = roomId;
+      socket.data.role = role;
+      
+      // Check if can join
+      const joinCheck = room.canJoin(userId, role);
+      if (!joinCheck.allowed) {
+        socket.emit('error', { 
+          type: 'JOIN_ERROR',
+          message: joinCheck.reason 
+        });
+        return;
+      }
+  
+      // All checks passed, proceed with join
+      socket.join(roomId);
+      room.addParticipant(userId);
+      room.assignRole(userId, role);
+      
+      // Notify all room participants of the new state
+      io.to(roomId).emit('room:status', {
+        ...room.serialize(),
+        participants: Array.from(room.participants),
+        roles: room.roles
+      });
+  
+      // Optional: Notify others that someone joined
+      socket.to(roomId).emit('room:user_joined', {
+        userId,
+        role,
+        timestamp: Date.now()
+      });
+    });
+  
+    // Start interview
+    socket.on('room:start', ({ roomId, userId }) => {
+      const room = activeRooms.get(roomId);
+      
+      if (!room || room.interviewerId !== userId) {
+        socket.emit('error', { message: 'Unauthorized' });
+        return;
+      }
+  
+      if (room.start()) {
         io.to(roomId).emit('room:status', room.serialize());
       }
+    });
+  
+  
+    // Handle room end
+    socket.on('room:end', ({ roomId, userId, operations, duration }) => {
+      const room = activeRooms.get(roomId);
+    
+      if (!room || room.interviewerId !== userId) {
+        socket.emit('error', { message: 'Unauthorized' });
+        return;
+      }
+    
+      // Set explicit end time that both parties will use
+      const endTime = Date.now();
+      room.endedAt = endTime;
       
-    }
-});
+      // Archive with explicit duration and end time
+      const archived = room.archive();
+      archived.duration = duration;
+      archived.endTime = endTime;
+      
+      // Broadcast to all clients with the same end time
+      io.to(roomId).emit('room:ended', {
+        endTime,
+        duration,
+        state: 'ARCHIVED'
+      });
+      
+      // Then broadcast the full room status
+      io.to(roomId).emit('room:status', archived);
+    });
+  
+    // Handle code changes
+    socket.on('code:change', ({ roomId, operation }) => {
+      const room = activeRooms.get(roomId);
+      
+      if (room?.addCodeOperation(operation)) {
+        socket.to(roomId).emit('code:sync', operation);
+      }
+    });
+  
+    // Handle notes
+    socket.on('note:add', ({  note, lineNumbers }) => {
+      const { userId, roomId, role } = socket.data;
+      const room = activeRooms.get(roomId);
+      if (room) {
+        console.log('Note added:', note, lineNumbers);
+        let addNoteResult = room.addNote(note, lineNumbers);
+        if (addNoteResult && room?.interviewerId === userId) {
+          io.to(roomId).emit('note:sync');
+        }
+
+      }
+    });
+  
+    // WebRTC signaling
+    socket.on('webrtc:signal', ({ roomId, signal }) => {
+      socket.to(roomId).emit('webrtc:signal', signal);
+    });
+  
+    socket.on('disconnect', async () => {
+      console.log('Client disconnected:', socket.id);
+  
+      const { userId, roomId, role } = socket.data;
+      
+      if (userId && roomId) {
+        const room = activeRooms.get(roomId);
+        if (room) {
+          // If room is ACTIVE, archive it immediately when anyone disconnects
+          if (room.state === 'ACTIVE') {
+            const archived = room.archive();
+            io.to(roomId).emit('room:status', archived);
+            //TODO save room to database then delete
+            //activeRooms.delete(roomId);
+            const roomsDb = db.collection('archivedRooms');   
+            await roomsDb.insertOne(archived);
+            activeRooms.delete(roomId);
+  
+          }
+          if (role === 'interviewer' && room.roles.interviewer === userId) {
+            room.roles.interviewer = null;
+          }
+          if (role === 'interviewee' && room.roles.interviewee === userId) {
+            room.roles.interviewee = null;
+          }
+  
+  
+  
+          room.removeParticipant(userId);
+  
+  
+          io.to(roomId).emit('room:status', room.serialize());
+        }
+        
+      }
+    });
+  });
 });
 
 wss.on('error', (error) => {
