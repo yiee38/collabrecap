@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@auth0/auth0-react": "^2.2.4",
+    "@auth0/nextjs-auth0": "^3.5.0",
     "@codemirror/lang-javascript": "^6.2.2",
     "@codemirror/view": "^6.35.2",
     "@radix-ui/react-alert-dialog": "^1.1.2",
