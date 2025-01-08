@@ -15,14 +15,12 @@ class CollaborationService {
     this.updateDebounceTimeout = null;
     this.isUpdating = false;
     
-    // Connect to your websocket server
     this.provider = new WebsocketProvider(
       'ws://localhost:8080/yjs',
       roomId,
       this.doc
     );
 
-    // Get text instance that will be shared
     this.yText = this.doc.getText('codemirror');
     this.yState = this.doc.getMap('interviewState');
     this.yTimeline = this.doc.getMap('timeline');
@@ -57,13 +55,13 @@ class CollaborationService {
         color: color,
       },
       timelineControl: false,
-      lastUpdate: 0
+      lastUpdate: 0,
+      mousePointer: null,
     });
 
     this.extensions = [
       yCollab(this.yText, this.provider.awareness, {
         onUpdate: () => {
-          // Only process updates if we're not currently updating
           if (!this.isUpdating) {
             this.undoManager.stopCapturing();
           }
@@ -113,7 +111,6 @@ class CollaborationService {
     return !this.isReplaying || this.replayController === this.userId;
   }
 
-  // Timeline control methods
   async requestTimelineControl() {
     if (this.yTimeline.get('controlledBy')) {
       return false;
@@ -142,12 +139,10 @@ class CollaborationService {
       return false;
     }
 
-    // Prevent duplicate updates within a short time window
     if (time === this.lastAppliedTime) {
       return false;
     }
 
-    // Clear any pending update
     if (this.updateDebounceTimeout) {
       clearTimeout(this.updateDebounceTimeout);
     }
@@ -158,7 +153,6 @@ class CollaborationService {
         this.lastAppliedTime = time;
         this.yTimeline.set('currentTime', time);
         
-        // Update awareness state to help prevent duplicate updates
         this.awareness.setLocalState({
           ...this.awareness.getLocalState(),
           lastUpdate: Date.now()
@@ -166,7 +160,53 @@ class CollaborationService {
 
         this.isUpdating = false;
         resolve(true);
-      }, 30); // Debounce window
+      }, 30);
+    });
+  }
+  
+
+  updateMousePointer(pointer) {
+    // Update awareness state with the new pointer position
+    // pointer now includes scrollTop from the .cm-scroller element
+    this.awareness.setLocalState({
+      ...this.awareness.getLocalState(),
+      mousePointer: {
+        x: pointer.x,
+        y: pointer.y,
+        lineNumber: pointer.lineNumber,
+        scrollTop: pointer.scrollTop,
+        timestamp: Date.now()
+      }
+    });
+  }
+
+  updateScrollPosition(scrollTop) {
+    this.awareness.setLocalState({
+      ...this.awareness.getLocalState(),
+      mousePointer: {
+        x: 0,
+        y: 0,
+        lineNumber: -1,
+        scrollTop: scrollTop,
+        timestamp: Date.now()
+      }
+    });
+
+  }
+  
+  onPointerUpdate(callback) {
+    this.awareness.on('change', () => {
+      const states = this.awareness.getStates();
+      const pointers = {};
+      states.forEach((state, clientId) => {
+        if (state.mousePointer) {
+          pointers[state.user.id] = {
+            ...state.mousePointer,
+            user: state.user
+          };
+        }
+      });
+      callback(pointers);
     });
   }
 
@@ -175,9 +215,6 @@ class CollaborationService {
       const currentTime = this.yTimeline.get('currentTime');
       const controlledBy = this.yTimeline.get('controlledBy');
       
-      // Only process the update if:
-      // 1. We're not the controller, or
-      // 2. This is a new time value we haven't processed yet
       if (controlledBy !== this.userId || currentTime !== this.lastAppliedTime) {
         this.lastAppliedTime = currentTime;
         callback({

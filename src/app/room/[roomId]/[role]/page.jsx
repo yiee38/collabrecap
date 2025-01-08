@@ -1,25 +1,34 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { socketService } from '@/lib/socketService';
 import CodeEditor from '@/components/CodeEditor';
 import Timeline from '@/components/Timeline';
 import NotePad from '@/components/Notepad';
 import CollaborationService from '@/lib/collaborationService';
 import { Button } from '@/components/ui/button';
+import { useSession, signIn } from "next-auth/react";
+import { getArchivedRoom } from '@/lib/apiAgent';
 
 const INTERVAL_MS = 50;
 
 const InterviewRoom = () => {
   const params = useParams();
+  const router = useRouter();
   const roomId = params.roomId;
-  const userId = params.userId;
   const role = params.role;
+  const { data: session, status } = useSession();
+  const [remotePointers, setRemotePointers] = useState({});
 
-  // Room and connection state
+
+  // Room state
   const [roomState, setRoomState] = useState('CREATED');
-  const [isConnected, setIsConnected] = useState(false);
+  const [error, setError] = useState(null);
+  const [participants, setParticipants] = useState({
+    interviewer: false,
+    interviewee: false
+  });
   
   // Timeline and playback state
   const [operations, setOperations] = useState([]);
@@ -37,60 +46,119 @@ const InterviewRoom = () => {
   const notepadRef = useRef(null);
 
   useEffect(() => {
-    if (!socketService.socket?.connected) {
-      socketService.connect(process.env.NEXT_PUBLIC_SOCKET_URL);
+    if (status === "unauthenticated") {
+      const callbackUrl = `/room/${roomId}/${role}`;
+      signIn('auth0', { callbackUrl });
+      return;
     }
-    
-    socketService.joinRoom(roomId, userId, role);
-    
-    socketService.socket.on('connect', () => {
-      setIsConnected(true);
-    });
 
-    socketService.socket.on('disconnect', () => {
-      setIsConnected(false);
-    });
-    
-    // Handle room status updates
-    socketService.onRoomStatus((room) => {
-      setRoomState(room.state);
-      if (room.state === 'ACTIVE' && !startTimeRef.current) {
-        startTimeRef.current = Date.now();
-      } else if (room.state === 'ARCHIVED' && room.endTime) {
-        endTimeRef.current = room.endTime;
-        setDuration(room.duration || (room.endTime - startTimeRef.current));
-      }
-    });
+    if (status === "authenticated" && session?.user?.email) {
+      const setupRoom = async () => {
+        try {
+          // Try to fetch archived room first
+          try {
+            const room = await getArchivedRoom(roomId);
+            console.log('Found archived room:', room);
+            
+            // Initialize room state from archived data
+            setRoomState('ARCHIVED');
+            setDuration(room.duration);
+            startTimeRef.current = room.startedAt;
+            endTimeRef.current = room.endTime;
+            setOperations(room.codeOperations || []);
+            
+            // Initialize collaboration service for replay
+            collaborationRef.current = new CollaborationService(roomId, session.user.email, role);
+            collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy }) => {
+              if (controlledBy !== session.user.email) {
+                setCurrentTime(currentTime);
+              }
+              setTimelineController(controlledBy);
+            });
+            return;
+          } catch (err) {
+            // Not found in archive (404) means it might be an active room
+            // Only log error if it's not a 404
+            if (err?.response?.status !== 404) {
+              console.error('Error fetching room:', err);
+            }
+          }
 
-    // Handle explicit room end event
-    socketService.socket.on('room:ended', ({ endTime, duration }) => {
-      endTimeRef.current = endTime;
-      setDuration(duration);
-      setRoomState('ARCHIVED');
-    });
+          // Connect to socket for active room
+          await socketService.connect(process.env.NEXT_PUBLIC_SOCKET_URL);
 
-    // Initialize collaboration service
-    collaborationRef.current = new CollaborationService(roomId, userId, role);
+          socketService.onError((error) => {
+            console.log('Socket error:', error);
+            setError('Room not found');
+          });
 
-    collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy }) => {
-      if (controlledBy !== userId) {
-        setCurrentTime(currentTime);
-      }
-      setTimelineController(controlledBy);
-    });
+          socketService.joinRoom(roomId, session.user.email, role);
+          
+          // Handle room status updates
+          socketService.onRoomStatus((room) => {
+            setRoomState(room.state);
+            if (room.state === 'ACTIVE' && !startTimeRef.current) {
+              startTimeRef.current = Date.now();
+            } else if (room.state === 'ARCHIVED' && room.endTime) {
+              endTimeRef.current = room.endTime;
+              setDuration(room.duration || (room.endTime - startTimeRef.current));
+            }
 
-    return () => {
-      if (playIntervalRef.current) {
-        clearInterval(playIntervalRef.current);
-      }
-      collaborationRef.current?.destroy();
-      socketService.disconnect();
-    };
-  }, [roomId, userId, role]);
+            // Update participants status
+            setParticipants({
+              interviewer: !!room.roles.interviewer,
+              interviewee: !!room.roles.interviewee
+            });
+          });
+
+          // Handle explicit room end event
+          socketService.socket.on('room:ended', ({ endTime, duration }) => {
+            endTimeRef.current = endTime;
+            setDuration(duration);
+            setRoomState('ARCHIVED');
+          });
+
+          // Initialize collaboration service
+          collaborationRef.current = new CollaborationService(roomId, session.user.email, role);
+
+          collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy }) => {
+            if (controlledBy !== session.user.email) {
+              setCurrentTime(currentTime);
+            }
+            setTimelineController(controlledBy);
+          });
+
+          collaborationRef.current.onPointerUpdate((pointer) => {
+            let rp = {};
+            
+            Object.keys(pointer).forEach((key) => {
+              if (key !== session.user.email) {
+                rp = pointer[key];
+              }
+            });
+            setRemotePointers(rp)
+          });
+
+        } catch (err) {
+          setError(err.message);
+        }
+      };
+
+      setupRoom();
+
+      return () => {
+        if (playIntervalRef.current) {
+          clearInterval(playIntervalRef.current);
+        }
+        collaborationRef.current?.destroy();
+        socketService.disconnect();
+      };
+    }
+  }, [status, roomId, session?.user?.email, role]);
 
   const startInterview = () => {
     if (role === 'interviewer') {
-      socketService.socket.emit('room:start', { roomId, userId });
+      socketService.socket.emit('room:start', { roomId, userId: session.user.email });
       startTimeRef.current = Date.now();
     }
   };
@@ -100,10 +168,11 @@ const InterviewRoom = () => {
       const newDuration = Date.now() - startTimeRef.current;
       await collaborationRef.current?.requestTimelineControl();
       collaborationRef.current?.updateTimeline(newDuration);
+      console.log(operations);
 
       socketService.socket.emit('room:end', { 
         roomId, 
-        userId,
+        userId: session.user.email,
         operations,
         duration: newDuration 
       });
@@ -163,7 +232,7 @@ const InterviewRoom = () => {
       clearInterval(playIntervalRef.current);
     }
     await collaborationRef.current?.requestTimelineControl();
-    collaborationRef.current?.startReplay(userId);
+    collaborationRef.current?.startReplay(session.user.email);
   };
   
   const handleDragEnd = () => {
@@ -198,15 +267,36 @@ const InterviewRoom = () => {
     }
   };
 
+  if (status === "loading") {
+    return <div>Loading...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen">
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+          <strong className="font-bold">Error: </strong>
+          <span className="block sm:inline">{error}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col w-full h-full items-center justify-center">
       <div className="flex items-center gap-4 mb-4">
-        <span className={`inline-block w-3 h-3 rounded-full ${
-          isConnected ? 'bg-green-500' : 'bg-red-500'
-        }`} />
-        <span className="text-sm text-gray-600">
-          {isConnected ? 'Connected' : 'Disconnected'}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`inline-block w-3 h-3 rounded-full ${
+            participants.interviewer ? 'bg-green-500' : 'bg-red-500'
+          }`} />
+          <span className="text-sm text-gray-600">Interviewer</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`inline-block w-3 h-3 rounded-full ${
+            participants.interviewee ? 'bg-green-500' : 'bg-red-500'
+          }`} />
+          <span className="text-sm text-gray-600">Candidate</span>
+        </div>
         <span className="text-sm text-gray-600">
           Room State: {roomState}
         </span>
@@ -228,8 +318,9 @@ const InterviewRoom = () => {
             onDragEnd={handleDragEnd}
             currentTimeOverride={currentTime}
             roomId={roomId}
-            userId={userId}
+            userId={session?.user?.email}
             role={role}
+            remotePointer={remotePointers}
           />
 
           {role === 'interviewer' ? (
@@ -239,7 +330,7 @@ const InterviewRoom = () => {
               endTimeRef={endTimeRef}
               ref={notepadRef}
               onTimestampClick={handleTimestampClick}
-              currentTime={currentTime} 
+              currentTime={currentTime}
             />
           ) : (
             <div className="flex flex-col gap-3 overflow-hidden">
@@ -256,10 +347,12 @@ const InterviewRoom = () => {
           {roomState === 'CREATED' && role === 'interviewer' && (
             <Button 
               onClick={startInterview}
-              disabled={!isConnected}
+              disabled={!participants.interviewer || !participants.interviewee}
               variant="default"
             >
-              Start Interview
+              {!participants.interviewer || !participants.interviewee 
+                ? "Waiting for both participants..." 
+                : "Start Interview"}
             </Button>
           )}
 
@@ -294,7 +387,7 @@ const InterviewRoom = () => {
               onReset={reset}
               role={role}
               timelineController={timelineController}
-              userId={userId}
+              userId={session?.user?.email}
             />
           )}
         </div>

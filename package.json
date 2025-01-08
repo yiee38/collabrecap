@@ -9,8 +9,6 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@auth0/auth0-react": "^2.2.4",
-    "@auth0/nextjs-auth0": "^3.5.0",
     "@codemirror/lang-javascript": "^6.2.2",
     "@codemirror/view": "^6.35.2",
     "@radix-ui/react-alert-dialog": "^1.1.2",
@@ -26,6 +24,7 @@
     "lucide-react": "^0.468.0",
     "mongodb": "^6.12.0",
     "next": "15.0.4",
+    "next-auth": "^4.24.11",
     "react": "^19.0.0",
     "react-bootstrap": "^2.10.6",
     "react-dom": "^19.0.0",

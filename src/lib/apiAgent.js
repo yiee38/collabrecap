@@ -1,10 +1,23 @@
 import axios from 'axios';
 
 const apiClient = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:8080',
+  baseURL: '/api',
   headers: {
     'Content-Type': 'application/json',
   }
 });
 
-export default apiClient;
+export const getArchivedRoom = async (roomId) => {
+  const response = await apiClient.get(`/rooms/${roomId}`);
+  return response.data;
+};
+
+export const getUserArchivedRooms = async (userId) => {
+  const response = await apiClient.get(`/rooms?userId=${userId}`);
+  return response.data;
+};
+
+export default {
+  getArchivedRoom,
+  getUserArchivedRooms
+};

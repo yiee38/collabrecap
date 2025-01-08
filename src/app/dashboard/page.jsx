@@ -3,15 +3,21 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { socketService } from '@/lib/socketService';
+import { useSession } from 'next-auth/react';
 
 const Dashboard = () => {
   const [myRooms, setMyRooms] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const router = useRouter();
-  
-  // In a real app, you might get this from your auth context
-  const userId = '123'; // Replace with actual user ID from your auth system
+  const { data: session, status } = useSession();
+
+  // Redirect to home if not authenticated
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.push('/');
+    }
+  }, [status, router]);
 
   useEffect(() => {
     if (!socketService.socket?.connected) {
@@ -26,21 +32,20 @@ const Dashboard = () => {
       setIsConnected(false);
     });
 
-    // Cleanup on unmount
     return () => {
       socketService.disconnect();
     };
   }, []);
 
   const createRoom = () => {
-    if (!socketService.socket?.connected) {
-      console.error('Socket not connected');
+    if (!socketService.socket?.connected || !session?.user?.email) {
+      console.error('Socket not connected or user not authenticated');
       return;
     }
 
     setIsCreatingRoom(true);
     
-    socketService.socket.emit('room:create', { userId });
+    socketService.socket.emit('room:create', { userId: session.user.email });
     
     socketService.socket.once('room:created', ({ roomId, room }) => {
       setMyRooms(prev => [...prev, room]);
@@ -55,6 +60,10 @@ const Dashboard = () => {
       console.error('Failed to copy text:', err);
     }
   };
+
+  if (status === "loading" || status === "unauthenticated") {
+    return null;
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -105,12 +114,12 @@ const Dashboard = () => {
                   <div className="flex gap-2 items-center">
                     <input
                       readOnly
-                      value={`${window.location.origin}/room/${userId}/${room.id}/interviewer`}
+                      value={`${window.location.origin}/room/${room.id}/interviewer`}
                       className="flex-1 px-3 py-2 border rounded-md text-sm"
                     />
                     <button
                       onClick={() => copyToClipboard(
-                        `${window.location.origin}/room/${userId}/${room.id}/interviewer`
+                        `${window.location.origin}/room/${room.id}/interviewer`
                       )}
                       className="p-2 text-blue-600 hover:text-blue-800"
                     >
@@ -124,12 +133,12 @@ const Dashboard = () => {
                   <div className="flex gap-2 items-center">
                     <input
                       readOnly
-                      value={ `${window.location.origin}/room/213/${room.id}/interviewee`}
+                      value={`${window.location.origin}/room/${room.id}/interviewee`}
                       className="flex-1 px-3 py-2 border rounded-md text-sm"
                     />
                     <button
                       onClick={() => copyToClipboard(
-                        `${window.location.origin}/room/213/${room.id}/interviewee`
+                        `${window.location.origin}/room/${room.id}/interviewee`
                       )}
                       className="p-2 text-blue-600 hover:text-blue-800"
                     >
@@ -139,7 +148,7 @@ const Dashboard = () => {
                 </div>
 
                 <button
-                  onClick={() => router.push(`/room/${userId}/${room.id}/interviewer`)}
+                  onClick={() => router.push(`/room/${room.id}/interviewer`)}
                   className="w-full px-4 py-2 bg-blue-600 text-white rounded-md 
                            hover:bg-blue-700 transition-colors"
                 >
@@ -152,7 +161,7 @@ const Dashboard = () => {
               <div className="space-y-4">
                 <p className="text-sm text-gray-600">Interview in progress...</p>
                 <button
-                  onClick={() => router.push(`/room/${userId}/${room.id}/interviewer`)}
+                  onClick={() => router.push(`/room/${room.id}/interviewer`)}
                   className="w-full px-4 py-2 bg-green-600 text-white rounded-md 
                            hover:bg-green-700 transition-colors"
                 >
@@ -165,7 +174,7 @@ const Dashboard = () => {
               <div className="space-y-4">
                 <p className="text-sm text-gray-600">Interview completed</p>
                 <button
-                  onClick={() => router.push(`/room/${userId}/${room.id}/interviewer`)}
+                  onClick={() => router.push(`/room/${room.id}/interviewer`)}
                   className="w-full px-4 py-2 bg-gray-600 text-white rounded-md 
                            hover:bg-gray-700 transition-colors"
                 >

@@ -31,10 +31,7 @@ if (typeof window !== 'undefined') {
   Quill.register(CustomTimestampBlot);
 }
 
-
 const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, formatTime, paddingTop, onTimestampClick }) => {
-
-
   const getColor = (isLinked, state) => {
     switch (state) {
       case 'ACTIVE':
@@ -44,7 +41,7 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
       default:
         return '#94a3b8'; // Default gray for CREATED state
     };
-   };
+  };
 
   const style = {
     height: '18.45px',
@@ -115,7 +112,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
   const [pendingLinkLine, setPendingLinkLine] = useState(null);
   const [warningMessage, setWarningMessage] = useState('');
 
-
   useImperativeHandle(ref, () => ({
     setManualTimestamp: () => {
       if (!quillRef.current) return;
@@ -131,7 +127,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
       }
     }
   }), []);
-
 
   useEffect(() => {
     if (roomState === 'ARCHIVED' && !endTimeRef.current) {
@@ -205,11 +200,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
         let timestamp = line.getAttribute('data-timestamp');
         
         if (!timestamp) {
-          /*
-          timestamp = Date.now().toString();
-          line.setAttribute('data-timestamp', timestamp);
-          line.setAttribute('data-linked', 'true');
-*/
           if (roomState === 'ARCHIVED') {
             timestamp = (baseTimeRef.current + currentTime).toString();
           } else {
@@ -233,18 +223,14 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
         line?.removeAttribute('data-timestamp');
         line?.removeAttribute('data-linked');
       }
-      
 
       newLineNumbers.push(lineData);
-
-      
-      
     }
+
     if (!socketService.socket?.connected) {
       socketService.connect(process.env.NEXT_PUBLIC_SOCKET_URL);
     }
     socketService.pushNote(quillEditor.getText(), newLineNumbers);
-    
     setLineNumbers(newLineNumbers);
   };
 
@@ -254,14 +240,12 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
       setWarningMessage(`Are you sure you want to unlink the timestamp at ${formatTime(line.time)}?`);
       setIsWarningOpen(true);
       setPendingLinkLine(line);
-      
     }
     else {
       console.log(`Clicked line: ${line.number} add time: ${formatTime(Date.now())}`);
     }
   };
 
- 
   const handleConfirmLink = () => {
     if (pendingLinkLine) {
       // Perform the actual unlink operation here
@@ -271,23 +255,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
     setIsWarningOpen(false);
     setWarningMessage('');
     setPendingLinkLine(null);
-  };
-
-  const containerStyle = {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '3px',
-    overflow: 'hidden'
-  };
-
-  const editorContainerStyle = {
-    display: 'flex',
-    flexDirection: 'row',
-    width: '500px',
-    padding: '33px 16px',
-    border: '1px solid #ddd',
-    borderRadius: '4px',
-    backgroundColor: '#fff'
   };
 
   return (
@@ -319,14 +286,13 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
                   roomState={roomState}
                   onClick={() => handleLineClick(line)}
                   formatTime={formatTime}
-                  paddingTop = {paddingTop}
+                  paddingTop={paddingTop}
                   onTimestampClick={onTimestampClick}
                   onMouseEnter={() => setIsHovering(true)}
                   onMouseLeave={() => setIsHovering(false)}
                 />)
               })}
             </div>
-          {/**Here */}
           </div>
           <div className="editor-wrapper" style={{ height: '100%' }}>
             <ReactQuill
@@ -349,6 +315,5 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
     </div>
   );
 };
-
 
 export default TimestampNotepad;
