@@ -590,12 +590,12 @@ const InterviewRoom = () => {
 
           {roomState === 'ACTIVE' && role === 'interviewer' && (
             <div className='flex flex-row gap-4'>
-              {false && <Button 
+              <Button 
                 onClick={addNoteAnchor}
                 variant="secondary"
               >
                 Add Note Anchor
-              </Button>}
+              </Button>
               <Button 
                 onClick={endInterview}
                 variant="destructive"
