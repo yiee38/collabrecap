@@ -14,14 +14,10 @@ class TimelineState {
   }
 
   canTransition(fromState, toState) {
-    const validTransitions = {
-      [this.states.IDLE]: [this.states.PLAYING, this.states.SEEKING, this.states.UPDATING],
-      [this.states.PLAYING]: [this.states.IDLE, this.states.SEEKING, this.states.UPDATING],
-      [this.states.SEEKING]: [this.states.IDLE, this.states.PLAYING, this.states.UPDATING],
-      [this.states.UPDATING]: [this.states.IDLE, this.states.PLAYING, this.states.SEEKING]
-    };
-
-    return validTransitions[fromState]?.includes(toState) || false;
+    if (fromState === this.states.SEEKING) {
+      return toState === this.states.IDLE;
+    }
+    return true;
   }
 
   transition(toState, meta = {}) {

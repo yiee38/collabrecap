@@ -116,6 +116,8 @@ class CollaborationService {
     this.yState.set('replayController', userId);
     this.isReplaying = true;
     this.replayController = userId;
+    this.yTimeline.set('isSeeking', true);
+    this.yTimeline.set('seekingUser', userId);
   }
 
   stopReplay() {
@@ -124,6 +126,8 @@ class CollaborationService {
       this.yState.set('replayController', null);
       this.isReplaying = false;
       this.replayController = null;
+      this.yTimeline.set('isSeeking', false);
+      this.yTimeline.set('seekingUser', null);
     }
   }
 
@@ -132,7 +136,8 @@ class CollaborationService {
   }
 
   async requestTimelineControl() {
-    if (this.yTimeline.get('controlledBy')) {
+    const currentController = this.yTimeline.get('controlledBy');
+    if (currentController && currentController !== this.userId && this.yState.get('isReplaying')) {
       return false;
     }
     
@@ -159,42 +164,48 @@ class CollaborationService {
     const playbackController = this.yTimeline.get('playbackController');
     const isPlaying = this.yTimeline.get('isPlaying');
     
-    // Only allow updates if:
-    // 1. We have explicit timeline control, or
-    // 2. We are the playback controller and playback is active
-    if (currentController !== this.userId && 
+    if (currentController && 
+        currentController !== this.userId && 
         !(playbackController === this.userId && isPlaying)) {
       return false;
     }
 
-    if (currentController === this.userId && isPlaying) {
-      this.setPlaying(false);
-      this.yTimeline.set('playbackController', null);
-    }
-
-    if (time === this.lastAppliedTime) {
+    if (this.isUpdating || 
+        time === this.lastAppliedTime || 
+        Math.abs(time - this.lastAppliedTime) < 50) {
       return false;
     }
 
-    if (this.updateDebounceTimeout) {
-      clearTimeout(this.updateDebounceTimeout);
-    }
+    this.isUpdating = true;
 
-    return new Promise((resolve) => {
-      this.updateDebounceTimeout = setTimeout(() => {
-        this.isUpdating = true;
-        this.lastAppliedTime = time;
-        this.yTimeline.set('currentTime', time);
-        
-        this.awareness.setLocalState({
-          ...this.awareness.getLocalState(),
-          lastUpdate: Date.now()
-        });
+    try {
+      if (this.updateDebounceTimeout) {
+        clearTimeout(this.updateDebounceTimeout);
+      }
 
+      await new Promise((resolve) => {
+        this.updateDebounceTimeout = setTimeout(() => {
+          this.doc.transact(() => {
+            this.lastAppliedTime = time;
+            this.yTimeline.set('currentTime', time);
+            
+            if (Math.abs(time - this.lastAppliedTime) >= 50) {
+              this.awareness.setLocalState({
+                ...this.awareness.getLocalState(),
+                lastUpdate: Date.now()
+              });
+            }
+          });
+          resolve();
+        }, 30);
+      });
+
+      return true;
+    } finally {
+      setTimeout(() => {
         this.isUpdating = false;
-        resolve(true);
-      }, 30);
-    });
+      }, 50);
+    }
   }
   
 
@@ -255,23 +266,44 @@ class CollaborationService {
     const playbackController = this.yTimeline.get('playbackController');
     
     if (currentController === this.userId || playbackController === this.userId) {
-      this.yTimeline.set('isPlaying', isPlaying);
+      this.doc.transact(() => {
+        this.yTimeline.set('isPlaying', isPlaying);
+        if (!isPlaying) {
+          this.yTimeline.set('playbackController', null);
+        }
+      });
     }
   }
 
   onTimelineUpdate(callback) {
+    let lastUpdate = {
+      currentTime: this.yTimeline.get('currentTime'),
+      controlledBy: this.yTimeline.get('controlledBy'),
+      isPlaying: this.yTimeline.get('isPlaying'),
+      isSeeking: this.yTimeline.get('isSeeking'),
+      seekingUser: this.yTimeline.get('seekingUser')
+    };
+
     this.yTimeline.observe(() => {
       const currentTime = this.yTimeline.get('currentTime');
       const controlledBy = this.yTimeline.get('controlledBy');
       const isPlaying = this.yTimeline.get('isPlaying');
+      const isSeeking = this.yTimeline.get('isSeeking');
+      const seekingUser = this.yTimeline.get('seekingUser');
       
-      if (controlledBy !== this.userId || currentTime !== this.lastAppliedTime || isPlaying !== undefined) {
-        this.lastAppliedTime = currentTime;
-        callback({
-          currentTime,
-          controlledBy,
-          isPlaying
-        });
+      if (controlledBy !== lastUpdate.controlledBy || 
+          currentTime !== lastUpdate.currentTime || 
+          isPlaying !== lastUpdate.isPlaying ||
+          isSeeking !== lastUpdate.isSeeking ||
+          seekingUser !== lastUpdate.seekingUser) {
+        
+        lastUpdate = { currentTime, controlledBy, isPlaying, isSeeking, seekingUser };
+        
+        if (controlledBy !== this.userId || 
+            currentTime !== this.lastAppliedTime || 
+            isPlaying !== undefined) {
+          callback(lastUpdate);
+        }
       }
     });
   }

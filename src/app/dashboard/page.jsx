@@ -39,11 +39,11 @@ const Dashboard = () => {
 
   const fetchRooms = async () => {
     try {
-      const res = await fetch(`/api/userRooms/${session.user.email}`);
+      const res = await fetch(`/api/activeRooms/${session.user.email}`);
       if (res.ok) {
         const data = await res.json();
-        setInterviewerRooms(data.rooms.interviewer || []);
-        setIntervieweeRooms(data.rooms.interviewee || []);
+        setInterviewerRooms(data.interviewer || []);
+        setIntervieweeRooms(data.interviewee || []);
       }
     } catch (err) {
       console.error('Could not load rooms:', err);

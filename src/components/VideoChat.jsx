@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
+import { socketService } from '@/lib/socketService';
 
 const VideoChat = ({ 
   roomId, 
@@ -179,11 +180,17 @@ const VideoChat = ({
   useEffect(() => {
     if (!isInterviewStarted) {
       fetchRecordings();
+    } else {
+      setRecordings({ local: null, remote: null });
     }
   }, [roomId, isInterviewStarted]);
 
   useEffect(() => {
     const initPeer = async () => {
+      if (peer) {
+        peer.destroy();
+      }
+
       const peerConfig = process.env.NODE_ENV === 'production' ? {
         host: window.location.hostname,
         path: '/peerService/peer',
@@ -234,13 +241,17 @@ const VideoChat = ({
           }
         } catch (err) {
           console.error('Error accessing media devices:', err);
+          onVideoReady(false);
         }
+      });
+
+      newPeer.on('error', (err) => {
+        console.error('Peer connection error:', err);
+        onVideoReady(false);
       });
 
       newPeer.on('call', async (call) => {
         try {
-          console.log(navigator);
-          console.log(navigator.mediaDevices);
           const stream = await navigator.mediaDevices.getUserMedia({ 
             video: {
               width: { ideal: 640 },
@@ -270,6 +281,7 @@ const VideoChat = ({
           });
         } catch (err) {
           console.error('Error answering call:', err);
+          onVideoReady(false);
         }
       });
 
@@ -279,9 +291,22 @@ const VideoChat = ({
     initPeer();
 
     return () => {
+      if (localVideoRef.current?.srcObject) {
+        localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+        localVideoRef.current.srcObject = null;
+      }
+      if (remoteVideoRef.current?.srcObject) {
+        remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+        remoteVideoRef.current.srcObject = null;
+      }
+      
       if (peer) {
         peer.destroy();
       }
+      
+      setIsLocalStreamReady(false);
+      setRemoteStream(null);
+      onVideoReady(false);
     };
   }, [roomId, role]);
 
@@ -334,11 +359,23 @@ const VideoChat = ({
       
       if (isFinal) {
         setUploadStatus('Upload complete');
+        socketService.socket.emit('upload:status', {
+          roomId,
+          role,
+          status: 'complete'
+        });
         fetchRecordings();
       }
     } catch (error) {
       console.error('Error uploading recording chunk:', error);
-      if (isFinal) setUploadStatus('Upload failed');
+      if (isFinal) {
+        setUploadStatus('Upload failed');
+        socketService.socket.emit('upload:status', {
+          roomId,
+          role,
+          status: 'failed'
+        });
+      }
     }
   };
 
@@ -485,22 +522,16 @@ const VideoChat = ({
           </div>
         )}
 
-        {!isInterviewStarted && (
+        {!isInterviewStarted && recordings.local && (
           <div className="flex gap-5 ml-auto">
             <div className="flex justify-center">
-              {recordings.local ? (
-                <video
-                  ref={localRecordingRef}
-                  playsInline
-                  preload="auto"
-                  className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
-                  src={`/api/recordings/stream/${recordings.local.id}`}
-                />
-              ) : (
-                <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
-                  <span className="text-sm text-gray-500">No Recording</span>
-                </div>
-              )}
+              <video
+                ref={localRecordingRef}
+                playsInline
+                preload="auto"
+                className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
+                src={`/api/recordings/stream/${recordings.local.id}`}
+              />
             </div>
             <div className="flex justify-center">
               {recordings.remote ? (

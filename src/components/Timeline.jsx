@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useState, useEffect } from 'react';
 import { FaPlay, FaPause, FaArrowRotateLeft } from "react-icons/fa6";
 import { Button } from 'react-bootstrap';
 import { debounce } from 'lodash';
@@ -45,11 +45,14 @@ const Timeline = ({
   role,
   timelineController,
   userId,
-  uploadStatus
+  uploadStatus,
+  uploadStatuses
 }) => {
   const seekInProgressRef = useRef(false);
   const lastSeekTimeRef = useRef(0);
   const MIN_SEEK_INTERVAL = 50;
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [seekingUser, setSeekingUser] = useState(null);
 
   const formatTime = (ms) => {
     const minutes = Math.floor(ms / 60000);
@@ -96,7 +99,34 @@ const Timeline = ({
     debouncedSeek.flush();
   };
 
-  const isControlDisabled = (timelineController && timelineController !== userId) || uploadStatus !== 'complete';
+  useEffect(() => {
+    if (timelineController?.isSeeking !== undefined) {
+      setIsSeeking(timelineController.isSeeking);
+      setSeekingUser(timelineController.seekingUser);
+    }
+  }, [timelineController]);
+
+  const isControlDisabled = (isSeeking && seekingUser && seekingUser !== userId) || 
+    (isInterviewActive && uploadStatus !== 'complete');
+
+  const getStatusMessage = () => {
+    if (isSeeking && seekingUser && seekingUser !== userId) {
+      return `Timeline is being controlled by ${role === 'interviewer' ? 'interviewee' : 'interviewer'}`;
+    }
+    
+    if (isInterviewActive && uploadStatus !== 'complete') {
+      return 'Waiting for upload to complete...';
+    }
+
+    if (!isInterviewActive && uploadStatus === 'incomplete') {
+      const missing = [];
+      if (!uploadStatuses?.interviewer) missing.push('interviewer');
+      if (!uploadStatuses?.interviewee) missing.push('interviewee');
+      return `Missing recordings from: ${missing.join(', ')}`;
+    }
+
+    return null;
+  };
 
   return (
     <div style={customStyle.timelineContainer}>
@@ -104,14 +134,14 @@ const Timeline = ({
         <Button 
           onClick={onTogglePlay} 
           disabled={isControlDisabled}
-          title={uploadStatus !== 'complete' ? "Waiting for upload to complete..." : ""}
+          title={getStatusMessage()}
         >
           {isPlaying ? <FaPause /> : <FaPlay />}
         </Button>
         <Button 
           onClick={onReset} 
           disabled={isControlDisabled}
-          title={uploadStatus !== 'complete' ? "Waiting for upload to complete..." : ""}
+          title={getStatusMessage()}
         >
           <FaArrowRotateLeft />
         </Button>
@@ -134,13 +164,9 @@ const Timeline = ({
         disabled={isControlDisabled}
         style={{ width: '100%' }}
       />
-      {(timelineController && timelineController !== userId) ? (
+      {getStatusMessage() && (
         <div style={customStyle.statusMessage}>
-          Timeline controlled by {role === 'interviewer' ? 'interviewee' : 'interviewer'}
-        </div>
-      ) : uploadStatus !== 'complete' && (
-        <div style={customStyle.statusMessage}>
-          Waiting for upload to complete...
+          {getStatusMessage()}
         </div>
       )}
     </div>

@@ -65,18 +65,6 @@ const InterviewRoom = () => {
     if (status === "authenticated" && session?.user?.email) {
       const setupRoom = async () => {
         try {
-          if (collaborationRef.current) {
-            collaborationRef.current.destroy();
-            collaborationRef.current = null;
-          }
-          if (socketService.socket?.connected) {
-            socketService.disconnect();
-          }
-          if (playIntervalRef.current) {
-            clearInterval(playIntervalRef.current);
-            playIntervalRef.current = null;
-          }
-
           try {
             const room = await getArchivedRoom(roomId);
             console.log('Found archived room:', room);
@@ -205,33 +193,9 @@ const InterviewRoom = () => {
       return () => {
         if (playIntervalRef.current) {
           clearInterval(playIntervalRef.current);
-          playIntervalRef.current = null;
         }
-        if (collaborationRef.current) {
-          collaborationRef.current.destroy();
-          collaborationRef.current = null;
-        }
+        collaborationRef.current?.destroy();
         socketService.disconnect();
-        
-        setRoomState('CREATED');
-        setRemotePointers({});
-        setParticipants({
-          interviewer: { present: false, videoReady: false },
-          interviewee: { present: false, videoReady: false }
-        });
-        setOperations([]);
-        setCurrentTime(0);
-        setDuration(0);
-        setIsPlaying(false);
-        setTimelineController(null);
-        setUploadStatus('pending');
-        setUploadStatuses({
-          interviewer: false,
-          interviewee: false
-        });
-        setArchivedNotes('');
-        setArchivedNoteLines([]);
-        setIsCollaborationReady(false);
       };
     }
   }, [status, roomId, session?.user?.email, role]);
@@ -245,12 +209,6 @@ const InterviewRoom = () => {
       setUploadStatus('pending');
     }
   }, [uploadStatuses, roomState]);
-
-  const handleLiveUpdate = (text, lines) => {
-    console.log("LIVE UPDATE!!")
-    setArchivedNotes(text);
-    setArchivedNoteLines(lines);
-  }
 
   const startInterview = () => {
     if (role === 'interviewer') {
@@ -496,14 +454,11 @@ const InterviewRoom = () => {
               ...prev,
               [role]: { ...prev[role], videoReady: ready }
             }));
-            
-            if (socketService.socket?.connected) {
-              socketService.socket.emit('video:ready', { 
-                roomId,
-                role,
-                ready 
-              });
-            }
+            socketService.socket.emit('video:ready', { 
+              roomId,
+              role,
+              ready 
+            });
           }}
         />
         <div className="flex flex-row gap-5">
@@ -523,34 +478,21 @@ const InterviewRoom = () => {
             initialOperations={operations}
             initialContent=""  
           />
-          {/*
-              <NotePad 
-              baseTimeRef={startTimeRef}
-              roomState={roomState}
-              endTimeRef={endTimeRef}
-              ref={notepadRef}
-              onTimestampClick={handleTimestampClick}
-              currentTime={currentTime}
-              initialContent={archivedNotes}
-              initialNoteLines={archivedNoteLines}
-              onSeek={handleSeek}
-            />
-              */}
 
           {role === 'interviewer' ? (
+
+            <InterviewerPanel
+              startTimeRef={startTimeRef}
+              roomState={roomState}
+              endTimeRef={endTimeRef}
+              notepadRef={notepadRef}
+              handleTimestampClick={handleTimestampClick}
+              currentTime={currentTime}
+              archivedNotes={archivedNotes}
+              archivedNoteLines={archivedNoteLines}
+              handleSeek={handleSeek}
             
-              <InterviewerPanel
-                startTimeRef={startTimeRef}
-                roomState={roomState}
-                endTimeRef={endTimeRef}
-                notepadRef={notepadRef}
-                handleTimestampClick={handleTimestampClick}
-                currentTime={currentTime}
-                archivedNotes={archivedNotes}
-                archivedNoteLines={archivedNoteLines}
-                handleSeek={handleSeek}
-                handleLiveUpdate={handleLiveUpdate}
-              />
+            />
           ) : (
             <div className="flex flex-col gap-3 overflow-hidden">
               <div className="flex flex-row w-[500px] px-8 py-8 border border-gray-200 rounded-lg bg-white">

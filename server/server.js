@@ -114,6 +114,10 @@ class Room {
     this.noteContent = '';
     this.noteLines = [];
     this.recordings = [];
+    this.uploadStatus = {
+      interviewer: false,
+      interviewee: false
+    };
   }
 
   canJoin(userId, role) {
@@ -180,7 +184,8 @@ class Room {
       codeOperations: this.codeOperations,
       noteContent: this.noteContent,
       noteLines: this.noteLines,
-      recordings: this.recordings
+      recordings: this.recordings,
+      uploadStatus: this.uploadStatus
     };
   }
 
@@ -190,12 +195,11 @@ class Room {
     this.noteContent = content;
     this.noteLines = lineNumbers;
     
-    if (this.state === 'ARCHIVED') {
-      client.db("collabrecap").collection('archivedRooms').updateOne(
-        { id: this.id },
-        { $set: { noteContent: content, noteLines: lineNumbers } }
-      ).catch(err => console.error('Error updating archived room notes:', err));
-    }
+    client.db("collabrecap").collection('archivedRooms').updateOne(
+      { id: this.id },
+      { $set: { noteContent: content, noteLines: lineNumbers } },
+      { upsert: true }
+    ).catch(err => console.error('Error updating room notes:', err));
     
     return true;
   }
@@ -352,12 +356,20 @@ client.connect().then(async () => {
       io.to(roomId).emit('room:status', archived);
 
       try {
-        await roomsCollection.insertOne({
-          ...archived,
-          codeOperations: operations || [],
-          noteLines: archived.noteLines
-        });
-        activeRooms.delete(roomId);
+        await roomsCollection.updateOne(
+          { id: roomId },
+          { 
+            $set: {
+              ...archived,
+              codeOperations: operations || [],
+              noteLines: archived.noteLines,
+              endedAt: endTime,
+              duration: duration,
+              state: 'ARCHIVED'
+            }
+          },
+          { upsert: true }
+        );
       } catch (error) {
         console.error('Error archiving room:', error);
         socket.emit('error', { message: 'Failed to archive room' });
@@ -367,7 +379,7 @@ client.connect().then(async () => {
     socket.on('note:add', ({ note, lineNumbers }) => {
       const { userId, roomId, role } = socket.data;
       const room = activeRooms.get(roomId);
-      if (room && role === 'interviewer') {
+      if (room) {
         console.log('Saving note:', { content: note, lines: lineNumbers });
         if (room.updateNote(note, lineNumbers)) {
           io.to(roomId).emit('note:sync', { content: note, lines: lineNumbers });
@@ -397,6 +409,24 @@ client.connect().then(async () => {
       socket.to(roomId).emit('video:ready', { role, ready });
     });
   
+    socket.on('upload:status', async ({ roomId, role, status }) => {
+      io.to(roomId).emit('upload:status', { role, status });
+      
+      const room = activeRooms.get(roomId);
+      if (room) {
+        room.uploadStatus[role] = status === 'complete';
+      }
+
+      try {
+        await client.db("collabrecap").collection('archivedRooms').updateOne(
+          { id: roomId },
+          { $set: { [`uploadStatus.${role}`]: status === 'complete' } }
+        );
+      } catch (error) {
+        console.error('Error updating upload status:', error);
+      }
+    });
+
     socket.on('disconnect', async () => {
       console.log('Client disconnected:', socket.id);
   
@@ -432,23 +462,67 @@ wss.on('error', (error) => {
   console.error('WebSocket Server Error:', error);
 });
 
-app.get('/api/activeRooms/:userId', (req, res) => {
-  const userId = req.params.userId;
-  const userRooms = {
-    interviewer: [],
-    interviewee: []
-  };
-  
-  Array.from(activeRooms.values()).forEach(room => {
-    if (room.roles.interviewer === userId) {
-      userRooms.interviewer.push(room.serialize());
+app.get('/api/activeRooms/:userId', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    console.log('Fetching rooms for user:', userId);
+
+    if (!client.topology?.isConnected()) {
+      console.log('MongoDB not connected, attempting to connect...');
+      await client.connect();
     }
-    if (room.roles.interviewee === userId) {
-      userRooms.interviewee.push(room.serialize());
+
+    const userRooms = {
+      interviewer: [],
+      interviewee: []
+    };
+
+    console.log('Active rooms count:', activeRooms.size);
+    for (const room of activeRooms.values()) {
+      if (room.roles.interviewer === userId) {
+        userRooms.interviewer.push(room.serialize());
+      }
+      if (room.roles.interviewee === userId) {
+        userRooms.interviewee.push(room.serialize());
+      }
     }
-  });
-  
-  res.json(userRooms);
+
+    const db = client.db("collabrecap");
+    const archivedRooms = await db.collection('archivedRooms')
+      .find({
+        $or: [
+          { "roles.interviewer": userId },
+          { "roles.interviewee": userId }
+        ]
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    console.log('Found archived rooms:', archivedRooms.length);
+
+    archivedRooms.forEach(room => {
+      if (room.roles.interviewer === userId) {
+        userRooms.interviewer.push(room);
+      }
+      if (room.roles.interviewee === userId) {
+        userRooms.interviewee.push(room);
+      }
+    });
+    
+    console.log('Total rooms found:', {
+      interviewer: userRooms.interviewer.length,
+      interviewee: userRooms.interviewee.length
+    });
+
+    res.json(userRooms);
+  } catch (error) {
+    console.error('Error fetching rooms:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch rooms',
+      details: error.message,
+      stack: error.stack
+    });
+  }
 });
 
 app.get('/health', (req, res) => {
