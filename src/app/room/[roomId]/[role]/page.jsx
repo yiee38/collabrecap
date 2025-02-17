@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { useSession, signIn } from "next-auth/react";
 import { getArchivedRoom } from '@/lib/apiAgent';
 import InterviewerPanel from '@/components/InterviewPanel';
+import QuestionEditor from '@/components/QuestionEditor';
 
 const INTERVAL_MS = 50;
 
@@ -42,6 +43,7 @@ const InterviewRoom = () => {
 
   const [archivedNotes, setArchivedNotes] = useState('');
   const [archivedNoteLines, setArchivedNoteLines] = useState([]);
+  const [archivedQuestionContent, setArchivedQuestionContent] = useState('');
   const [isCollaborationReady, setIsCollaborationReady] = useState(false);
   
   useEffect(() => {
@@ -99,6 +101,7 @@ const InterviewRoom = () => {
             setOperations(archivedOperations);
             setArchivedNotes(room.noteContent || '');
             setArchivedNoteLines(room.noteLines || []);
+            setArchivedQuestionContent(room.questionContent || '');
             
             collaborationRef.current = new CollaborationService(roomId, session.user.email, role);
             collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy, isPlaying, isSeeking, seekingUser }) => {
@@ -231,6 +234,7 @@ const InterviewRoom = () => {
         });
         setArchivedNotes('');
         setArchivedNoteLines([]);
+        setArchivedQuestionContent('');
         setIsCollaborationReady(false);
       };
     }
@@ -269,13 +273,16 @@ const InterviewRoom = () => {
       
       setDuration(actualDuration);
       
+      const questionContent = collaborationRef.current?.doc.getText('questionContent').toString() || '';
+      
       setUploadStatus('uploading');
       socketService.socket.emit('room:end', { 
         roomId, 
         userId: session.user.email,
         operations,
         duration: actualDuration,
-        endTime
+        endTime,
+        questionContent
       });
 
       socketService.socket.emit('upload:status', {
@@ -550,12 +557,14 @@ const InterviewRoom = () => {
                 archivedNoteLines={archivedNoteLines}
                 handleSeek={handleSeek}
                 handleLiveUpdate={handleLiveUpdate}
+                collaborationService={collaborationRef.current}
+                questionContent={archivedQuestionContent}
               />
           ) : (
             <div className="flex flex-col gap-3 overflow-hidden">
               <div className="flex flex-row w-[500px] px-8 py-8 border border-gray-200 rounded-lg bg-white">
                 <div className="w-full h-[450px]">
-                  Placeholder for candidate view
+                  <QuestionEditor collaborationService={collaborationRef.current} />
                 </div>
               </div>
             </div>

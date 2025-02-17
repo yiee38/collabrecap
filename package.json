@@ -28,6 +28,7 @@
     "next-auth": "^4.24.11",
     "peer": "^1.0.2",
     "peerjs": "^1.5.4",
+    "quill-cursors": "^4.0.4",
     "react": "^19.0.0",
     "react-bootstrap": "^2.10.6",
     "react-dom": "^19.0.0",
@@ -39,6 +40,7 @@
     "uuid": "^11.0.3",
     "ws": "^8.18.0",
     "y-codemirror.next": "^0.3.5",
+    "y-quill": "^1.0.0",
     "y-websocket": "^2.0.4",
     "yjs": "^13.6.20"
   },

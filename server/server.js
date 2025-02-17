@@ -113,6 +113,7 @@ class Room {
     this.codeOperations = [];
     this.noteContent = '';
     this.noteLines = [];
+    this.questionContent = '';
     this.recordings = [];
     this.uploadStatus = {
       interviewer: false,
@@ -163,11 +164,14 @@ class Room {
     return true;
   }
 
-  archive(operations) {
+  archive(operations, questionContent) {
     this.state = 'ARCHIVED';
     this.endedAt = Date.now();
     if (operations) {
       this.codeOperations = operations;
+    }
+    if (questionContent) {
+      this.questionContent = questionContent;
     }
     console.log('Room archived:', this.id);
     return this.serialize();
@@ -184,6 +188,7 @@ class Room {
       codeOperations: this.codeOperations,
       noteContent: this.noteContent,
       noteLines: this.noteLines,
+      questionContent: this.questionContent,
       recordings: this.recordings,
       uploadStatus: this.uploadStatus
     };
@@ -200,6 +205,20 @@ class Room {
       { $set: { noteContent: content, noteLines: lineNumbers } },
       { upsert: true }
     ).catch(err => console.error('Error updating room notes:', err));
+    
+    return true;
+  }
+
+  updateQuestionContent(content) {
+    if (this.state !== 'ACTIVE' && this.state !== 'ARCHIVED') return false;
+    
+    this.questionContent = content;
+    
+    client.db("collabrecap").collection('archivedRooms').updateOne(
+      { id: this.id },
+      { $set: { questionContent: content } },
+      { upsert: true }
+    ).catch(err => console.error('Error updating question content:', err));
     
     return true;
   }
@@ -333,46 +352,32 @@ client.connect().then(async () => {
       }
     });
   
-    socket.on('room:end', async ({ roomId, userId, operations, duration }) => {
+    socket.on('room:end', async ({ roomId, userId, operations, duration, endTime, questionContent }) => {
       const room = activeRooms.get(roomId);
-    
-      if (!room || room.roles.interviewer !== userId) {
-        socket.emit('error', { message: 'Unauthorized' });
-        return;
-      }
-    
-      const endTime = Date.now();
-      room.endedAt = endTime;
-      
-      const archived = room.archive(operations, endTime);
-      archived.duration = duration;
-      
-      io.to(roomId).emit('room:ended', {
-        endTime,
-        duration,
-        state: 'ARCHIVED'
-      });
-      
-      io.to(roomId).emit('room:status', archived);
-
-      try {
-        await roomsCollection.updateOne(
-          { id: roomId },
-          { 
-            $set: {
-              ...archived,
-              codeOperations: operations || [],
-              noteLines: archived.noteLines,
-              endedAt: endTime,
-              duration: duration,
-              state: 'ARCHIVED'
-            }
-          },
-          { upsert: true }
-        );
-      } catch (error) {
-        console.error('Error archiving room:', error);
-        socket.emit('error', { message: 'Failed to archive room' });
+      if (room && room.roles.interviewer === userId) {
+        room.endedAt = endTime;
+        
+        const archived = room.archive(operations, questionContent);
+        archived.duration = duration;
+        
+        try {
+          await client.db("collabrecap").collection('archivedRooms').updateOne(
+            { id: roomId },
+            { 
+              $set: { 
+                ...archived,
+                duration,
+                endTime,
+                questionContent
+              } 
+            },
+            { upsert: true }
+          );
+          
+          io.to(roomId).emit('room:ended', { endTime, duration });
+        } catch (error) {
+          console.error('Error archiving room:', error);
+        }
       }
     });
   

@@ -1,7 +1,8 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import NotePad from "./NotepadTab"
+import QuestionEditor from "./QuestionEditor"
 
-const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, handleTimestampClick, currentTime, archivedNotes, archivedNoteLines, handleSeek, handleLiveUpdate }) => {
+const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, handleTimestampClick, currentTime, archivedNotes, archivedNoteLines, handleSeek, handleLiveUpdate, collaborationService }) => {
 
   return (
     <div className="flex flex-col gap-3 overflow-hidden">
@@ -11,11 +12,7 @@ const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, han
           <TabsTrigger value="notes">Notes</TabsTrigger>
         </TabsList>
         <TabsContent value="question">
-            <div className="flex flex-row   bg-white">
-              <div className="w-full h-[402px]">
-                Placeholder for candidate view
-              </div>
-            </div>
+          <QuestionEditor collaborationService={collaborationService} />
         </TabsContent>
         <TabsContent value="notes">
           <NotePad 
