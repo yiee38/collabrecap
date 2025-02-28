@@ -132,38 +132,66 @@ router.get('/stream/:recordingId', async (req, res) => {
     }
 
     const fileInfo = files[0];
-    console.log('Streaming file:', {
-      id: fileInfo._id.toString(),
-      filename: fileInfo.filename,
-      size: fileInfo.length,
-      contentType: fileInfo.metadata?.contentType
-    });
-
-    res.set({
-      'Content-Type': 'video/webm',
-      'Content-Length': fileInfo.length,
-      'Accept-Ranges': 'bytes',
-      'Cache-Control': 'no-cache'
-    });
-
-    const chunks = [];
-    const downloadStream = gridFSBucket.openDownloadStream(recordingId);
+    const fileSize = fileInfo.length;
     
-    downloadStream.on('data', chunk => {
-      chunks.push(chunk);
-    });
-
-    downloadStream.on('end', () => {
-      const buffer = Buffer.concat(chunks);
-      res.end(buffer);
-    });
-
-    downloadStream.on('error', (error) => {
-      console.error('Stream error:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Streaming failed' });
-      }
-    });
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = (end - start) + 1;
+      
+      console.log(`Streaming range ${start}-${end}/${fileSize} for file:`, {
+        id: fileInfo._id.toString(),
+        filename: fileInfo.filename
+      });
+      
+      res.status(206);
+      res.set({
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': 'video/webm',
+        'Cache-Control': 'public, max-age=3600'
+      });
+      
+      const downloadStream = gridFSBucket.openDownloadStream(recordingId, {
+        start: start,
+        end: end + 1
+      });
+      
+      downloadStream.pipe(res);
+      
+      downloadStream.on('error', (error) => {
+        console.error('Stream error:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Streaming failed' });
+        }
+      });
+    } else {
+      console.log('Streaming full file:', {
+        id: fileInfo._id.toString(),
+        filename: fileInfo.filename,
+        size: fileSize
+      });
+      
+      res.set({
+        'Content-Type': 'video/webm',
+        'Content-Length': fileSize,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=3600'
+      });
+      
+      const downloadStream = gridFSBucket.openDownloadStream(recordingId);
+      downloadStream.pipe(res);
+      
+      downloadStream.on('error', (error) => {
+        console.error('Stream error:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Streaming failed' });
+        }
+      });
+    }
 
   } catch (error) {
     console.error('Stream error:', error);
@@ -198,5 +226,55 @@ router.get('/rooms/:roomId/list', async (req, res) => {
   }
 });
 
+router.get('/check/:recordingId', async (req, res) => {
+  try {
+    const recordingId = new ObjectId(req.params.recordingId);
+    const files = await gridFSBucket.find({ _id: recordingId }).toArray();
+    
+    if (!files.length) {
+      return res.status(404).json({ exists: false, error: 'Recording not found' });
+    }
+
+    const fileInfo = files[0];
+    return res.json({ 
+      exists: true, 
+      fileInfo: {
+        id: fileInfo._id.toString(),
+        filename: fileInfo.filename,
+        size: fileInfo.length,
+        contentType: fileInfo.metadata?.contentType || 'video/webm',
+        metadata: fileInfo.metadata
+      }
+    });
+  } catch (error) {
+    console.error('Check error:', error);
+    res.status(500).json({ exists: false, error: 'Failed to check recording' });
+  }
+});
+
+router.get('/rooms/:roomId/check', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const files = await gridFSBucket.find({ 
+      'metadata.roomId': roomId,
+      'metadata.isChunk': { $ne: true } 
+    }).toArray();
+    
+    return res.json({
+      roomId,
+      recordingsCount: files.length,
+      recordings: files.map(file => ({
+        id: file._id.toString(),
+        filename: file.filename,
+        role: file.metadata?.role,
+        size: file.length,
+        timestamp: file.metadata?.timestamp
+      }))
+    });
+  } catch (error) {
+    console.error('Room check error:', error);
+    res.status(500).json({ error: 'Failed to check room recordings' });
+  }
+});
 
 module.exports = { initRecordingService };

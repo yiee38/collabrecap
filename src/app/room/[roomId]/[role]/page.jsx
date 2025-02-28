@@ -34,6 +34,7 @@ const InterviewRoom = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isSeeking, setIsSeeking] = useState(false);
   const [timelineController, setTimelineController] = useState(null);
   const [uploadStatus, setUploadStatus] = useState('pending');
   const [uploadStatuses, setUploadStatuses] = useState({
@@ -79,54 +80,6 @@ const InterviewRoom = () => {
             playIntervalRef.current = null;
           }
 
-          try {
-            const room = await getArchivedRoom(roomId);
-            console.log('Found archived room:', room);
-            
-            setRoomState('ARCHIVED');
-            setUploadStatuses(room.uploadStatus || {
-              interviewer: false,
-              interviewee: false
-            });
-            setUploadStatus(
-              room.uploadStatus?.interviewer && room.uploadStatus?.interviewee 
-                ? 'complete' 
-                : 'incomplete'
-            );
-            setDuration(room.duration);
-            startTimeRef.current = room.startedAt;
-            endTimeRef.current = room.endTime;
-            const archivedOperations = room.codeOperations || [];
-            console.log("Archived operations from server:", archivedOperations);
-            setOperations(archivedOperations);
-            setArchivedNotes(room.noteContent || '');
-            setArchivedNoteLines(room.noteLines || []);
-            setArchivedQuestionContent(room.questionContent || '');
-            
-            collaborationRef.current = new CollaborationService(roomId, session.user.email, role);
-            collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy, isPlaying, isSeeking, seekingUser }) => {
-              if (controlledBy !== session.user.email) {
-                setCurrentTime(currentTime);
-              }
-              setTimelineController({
-                userId: controlledBy,
-                isSeeking,
-                seekingUser
-              });
-              if (isPlaying !== undefined) {
-                setIsPlaying(isPlaying);
-              }
-            });
-            collaborationRef.current.provider.on('status', ({ status }) => {
-              console.log('Collaboration status:', status);
-              setIsCollaborationReady(status === 'connected');
-            });
-          } catch (err) {
-            if (err?.response?.status !== 404) {
-              console.error('Error fetching room:', err);
-            }
-          }
-
           await socketService.connect(process.env.NEXT_PUBLIC_SOCKET_URL);
 
           socketService.onError((error) => {
@@ -154,6 +107,27 @@ const InterviewRoom = () => {
           socketService.socket.on('room:ended', ({ endTime, duration }) => {
             endTimeRef.current = endTime;
             setDuration(duration);
+            
+            if (collaborationRef.current?.doc) {
+              const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+              const currentTime = Date.now();
+              
+              collaborationRef.current.doc.transact(() => {
+                if (role === 'interviewee') {
+                  collaborationRef.current.yState.set('operationApplier', null);
+                  collaborationRef.current.yState.set('operationsInitialized', false);
+                  collaborationRef.current.yState.set('operationsInitializer', null);
+                } else if (role === 'interviewer') {
+                  if (!transitionTimestamp) {
+                    collaborationRef.current.yState.set('transitionTimestamp', currentTime);
+                    collaborationRef.current.yState.set('operationApplier', session.user.email);
+                    collaborationRef.current.yState.set('operationsInitialized', true);
+                    collaborationRef.current.yState.set('operationsInitializer', session.user.email);
+                  }
+                }
+              });
+            }
+            
             setRoomState('ARCHIVED');
           });
 
@@ -171,32 +145,102 @@ const InterviewRoom = () => {
             }));
           });
 
-          collaborationRef.current = new CollaborationService(roomId, session.user.email, role);
-
-          collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy, isPlaying, isSeeking, seekingUser }) => {
-            if (controlledBy !== session.user.email) {
-              setCurrentTime(currentTime);
-            }
-            setTimelineController({
-              userId: controlledBy,
-              isSeeking,
-              seekingUser
-            });
-            if (isPlaying !== undefined) {
-              setIsPlaying(isPlaying);
-            }
-          });
-
-          collaborationRef.current.onPointerUpdate((pointer) => {
-            let rp = {};
+          try {
+            const room = await getArchivedRoom(roomId);
+            console.log('Found archived room:', room);
             
-            Object.keys(pointer).forEach((key) => {
-              if (key !== session.user.email) {
-                rp = pointer[key];
+            setRoomState('ARCHIVED');
+            setUploadStatuses(room.uploadStatus || {
+              interviewer: false,
+              interviewee: false
+            });
+            setUploadStatus(
+              room.uploadStatus?.interviewer && room.uploadStatus?.interviewee 
+                ? 'complete' 
+                : 'incomplete'
+            );
+            setDuration(room.duration);
+            startTimeRef.current = room.startedAt;
+            endTimeRef.current = room.endTime;
+            
+            if (collaborationRef.current?.doc) {
+              collaborationRef.current.doc.transact(() => {
+                collaborationRef.current.yState.set('operationApplier', null);
+                collaborationRef.current.yState.set('operationsInitialized', false);
+                collaborationRef.current.yState.set('operationsInitializer', null);
+              });
+            }
+            
+            const archivedOperations = room.codeOperations || [];
+            console.log("Archived operations from server:", archivedOperations.length);
+            setOperations(archivedOperations);
+            setArchivedNotes(room.noteContent || '');
+            setArchivedNoteLines(room.noteLines || []);
+            setArchivedQuestionContent(room.questionContent || '');
+          } catch (err) {
+            if (err?.response?.status !== 404) {
+              console.error('Error fetching room:', err);
+            }
+          }
+
+          if (!collaborationRef.current) {
+            collaborationRef.current = new CollaborationService(roomId, session.user.email, role);
+            
+            collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy, isPlaying, isSeeking, seekingUser }) => {
+              if (controlledBy !== session.user.email) {
+                setCurrentTime(currentTime);
+              }
+              setTimelineController({
+                userId: controlledBy,
+                isSeeking,
+                seekingUser
+              });
+              if (isPlaying !== undefined) {
+                setIsPlaying(isPlaying);
               }
             });
-            setRemotePointers(rp)
-          });
+
+            collaborationRef.current.onPointerUpdate((pointer) => {
+              let rp = {};
+              
+              Object.keys(pointer).forEach((key) => {
+                if (key !== session.user.email) {
+                  rp = pointer[key];
+                }
+              });
+              setRemotePointers(rp)
+            });
+            
+            collaborationRef.current.provider.on('status', ({ status }) => {
+              console.log('Collaboration status:', status);
+              setIsCollaborationReady(status === 'connected');
+              
+              if (status === 'connected' && roomState === 'ARCHIVED' && operations.length > 0) {
+                const states = collaborationRef.current.awareness.getStates();
+                const clientCount = states.size;
+                
+                const isInitialized = collaborationRef.current.yState.get('operationsInitialized');
+                const initializer = collaborationRef.current.yState.get('operationsInitializer');
+                
+                if (!isInitialized && !initializer) {
+                  if (clientCount <= 1) {
+                    console.log('First client connected, becoming operations initializer');
+                    collaborationRef.current.yState.set('operationsInitialized', true);
+                    collaborationRef.current.yState.set('operationsInitializer', session.user.email);
+                  } else {
+                    setTimeout(() => {
+                      const updatedInitializer = collaborationRef.current.yState.get('operationsInitializer');
+                      if (!updatedInitializer) {
+                        console.log('No initializer set yet, claiming the role');
+                        collaborationRef.current.yState.set('operationsInitialized', true);
+                        collaborationRef.current.yState.set('operationsInitializer', session.user.email);
+                      }
+                    }, 1000);
+                  }
+                }
+              }
+            });
+          }
 
         } catch (err) {
           setError(err.message);
@@ -273,13 +317,22 @@ const InterviewRoom = () => {
       
       setDuration(actualDuration);
       
+      if (collaborationRef.current?.doc) {
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yState.set('operationApplier', session.user.email);
+          collaborationRef.current.yState.set('operationsInitialized', true);
+          collaborationRef.current.yState.set('operationsInitializer', session.user.email);
+          collaborationRef.current.yState.set('transitionTimestamp', Date.now());
+        });
+      }
+      
       const questionContent = collaborationRef.current?.doc.getText('questionContent').toString() || '';
       
       setUploadStatus('uploading');
       socketService.socket.emit('room:end', { 
         roomId, 
         userId: session.user.email,
-        operations,
+        operations: operations,
         duration: actualDuration,
         endTime,
         questionContent
@@ -296,15 +349,61 @@ const InterviewRoom = () => {
   };
 
   const handleOperationsUpdate = (newOperations, newDuration) => {
-    setOperations(newOperations);
-    setDuration(newDuration);
+    const currentApplier = collaborationRef.current?.yState.get('operationApplier');
+    const transitionTimestamp = collaborationRef.current?.yState.get('transitionTimestamp');
+    const currentTime = Date.now();
+    const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+    
+    const shouldApplyOperations = !isPlaying || 
+      currentApplier === session?.user?.email || 
+      (inTransition && role === 'interviewer');
+    
+    if (shouldApplyOperations) {
+      const ops = newOperations.filter(op => 
+        !op.source || 
+        op.source === session?.user?.email ||
+        (roomState === 'ARCHIVED' && isPlaying) 
+      );
+      
+      console.log(`Updating operations (${roomState}):`, ops.length);
+      setOperations(ops);
+      setDuration(newDuration);
+      
+      if (roomState === 'ARCHIVED' && !inTransition) {
+        const initializer = collaborationRef.current?.yState.get('operationsInitializer');
+        const isInitialized = collaborationRef.current?.yState.get('operationsInitialized');
+        
+        if (!isInitialized && !initializer && operations.length === 0) {
+          console.log('Setting self as operations initializer');
+          collaborationRef.current.doc.transact(() => {
+            collaborationRef.current.yState.set('operationsInitialized', true);
+            collaborationRef.current.yState.set('operationsInitializer', session?.user?.email);
+          });
+        }
+        
+        if (!initializer || initializer === session?.user?.email) {
+          console.log('Saving operations to server as initializer');
+          socketService.socket.emit('room:update_operations', { 
+            roomId, 
+            operations: ops
+          });
+        }
+      }
+    } else {
+      setOperations([]);
+    }
   };
 
   useEffect(() => {
     const playbackController = collaborationRef.current?.yTimeline.get('playbackController');
     const isCurrentController = playbackController === session?.user?.email;
 
-    if (isPlaying && !playIntervalRef.current && isCurrentController) {
+    if (playIntervalRef.current) {
+      clearInterval(playIntervalRef.current);
+      playIntervalRef.current = null;
+    }
+
+    if (isPlaying && isCurrentController) {
       lastUpdateRef.current = Date.now();
       playIntervalRef.current = setInterval(() => {
         const now = Date.now();
@@ -316,135 +415,293 @@ const InterviewRoom = () => {
           if (newTime >= duration) {
             clearInterval(playIntervalRef.current);
             playIntervalRef.current = null;
-            collaborationRef.current?.setPlaying(false);
-            collaborationRef.current?.updateTimeline(duration);
-            collaborationRef.current?.yTimeline.set('playbackController', null);
+            
+            try {
+              if (collaborationRef.current?.doc) {
+                collaborationRef.current.doc.transact(() => {
+                  collaborationRef.current.yTimeline.set('isPlaying', false);
+                  collaborationRef.current.yTimeline.set('playbackController', null);
+                  collaborationRef.current.yTimeline.set('currentTime', duration);
+                  collaborationRef.current.yTimeline.set('controlledBy', null);
+                  collaborationRef.current.yState.set('operationApplier', null);
+                });
+              }
+            } catch (error) {
+              console.error("Error updating shared state at end of playback:", error);
+            }
+            
             return duration;
           }
           
-          collaborationRef.current?.updateTimeline(newTime);
+          if (collaborationRef.current?.doc) {
+            collaborationRef.current.doc.transact(() => {
+              collaborationRef.current.yTimeline.set('currentTime', newTime);
+            });
+          }
+          
           return newTime;
         });
       }, INTERVAL_MS);
-    } else if (!isPlaying && playIntervalRef.current) {
-      clearInterval(playIntervalRef.current);
-      playIntervalRef.current = null;
-      if (isCurrentController) {
-        collaborationRef.current?.yTimeline.set('playbackController', null);
-      }
-    }
-  }, [isPlaying, duration, session?.user?.email]);
-
-  const togglePlayback = async () => {
-    if (collaborationRef.current?.isUpdating) {
-      return;
     }
 
-    if (isPlaying) {
-      collaborationRef.current?.setPlaying(false);
+    return () => {
       if (playIntervalRef.current) {
         clearInterval(playIntervalRef.current);
         playIntervalRef.current = null;
       }
-      return;
-    }
+    };
+  }, [isPlaying, duration, session?.user?.email]);
 
-    try {
-      await collaborationRef.current?.requestTimelineControl();
+  const togglePlayback = () => {
+    if (isPlaying) {
+      setIsPlaying(false);
       
-      const isAtEnd = Math.abs(currentTime - duration) < 50;
-      if (isAtEnd) {
-        setCurrentTime(0);
-        await collaborationRef.current?.updateTimeline(0);
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
       }
       
-      collaborationRef.current?.yTimeline.set('playbackController', session.user.email);
-      collaborationRef.current?.setPlaying(true);
-    } finally {
-      collaborationRef.current?.releaseTimelineControl();
+      try {
+        if (collaborationRef.current?.doc) {
+          const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+          const currentTime = Date.now();
+          const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+          
+          collaborationRef.current.doc.transact(() => {
+            collaborationRef.current.yTimeline.set('isPlaying', false);
+            collaborationRef.current.yTimeline.set('playbackController', null);
+            collaborationRef.current.yTimeline.set('controlledBy', null);
+            
+            if (!inTransition || role !== 'interviewer') {
+              collaborationRef.current.yState.set('operationApplier', null);
+            }
+          });
+        }
+      } catch (error) {
+        console.error("Error updating shared state:", error);
+      }
+      
+      return;
+    }
+    
+    setIsPlaying(true);
+    
+    if (Math.abs(currentTime - duration) < 50) {
+      setCurrentTime(0);
+    }
+    
+    try {
+      if (collaborationRef.current?.doc) {
+        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+        const currentTime = Date.now();
+        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+        
+        collaborationRef.current.doc.transact(() => {
+          if ((inTransition && role === 'interviewer') || !inTransition) {
+            collaborationRef.current.yState.set('operationApplier', session?.user?.email);
+          }
+          
+          collaborationRef.current.yTimeline.set('isPlaying', true);
+          collaborationRef.current.yTimeline.set('playbackController', session?.user?.email);
+          collaborationRef.current.yTimeline.set('controlledBy', null);
+          
+          if (Math.abs(currentTime - duration) < 50) {
+            collaborationRef.current.yTimeline.set('currentTime', 0);
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error updating shared state:", error);
     }
   };
 
-  const handleSeek = async (e) => {
-    if (isPlaying) {
-      if (playIntervalRef.current) {
-        clearInterval(playIntervalRef.current);
-        playIntervalRef.current = null;
-      }
-      collaborationRef.current?.setPlaying(false);
-      collaborationRef.current?.yTimeline.set('playbackController', null);
-    }
-
+  const handleSeek = (e) => {
     const newTime = parseInt(e.target.value);
+    
     if (Math.abs(newTime - currentTime) < 50) {
       return;
     }
-
-    await collaborationRef.current?.requestTimelineControl();
-    setCurrentTime(newTime);
-    await collaborationRef.current?.updateTimeline(newTime);
-    collaborationRef.current?.releaseTimelineControl();
-  };
-
-  const handleDragStart = async () => {
+    
     if (isPlaying) {
-      collaborationRef.current?.setPlaying(false);
-      collaborationRef.current?.yTimeline.set('playbackController', null);
+      setIsPlaying(false);
+      
       if (playIntervalRef.current) {
         clearInterval(playIntervalRef.current);
         playIntervalRef.current = null;
       }
     }
+    
+    setCurrentTime(newTime);
+    
+    try {
+      if (collaborationRef.current?.doc) {
+        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+        const currentTime = Date.now();
+        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('isPlaying', false);
+          collaborationRef.current.yTimeline.set('playbackController', null);
 
-    await collaborationRef.current?.requestTimelineControl();
-    collaborationRef.current?.startReplay(session.user.email);
+          if (!inTransition || role !== 'interviewer') {
+            collaborationRef.current.yState.set('operationApplier', null);
+          }
+        });
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('currentTime', newTime);
+        });
+      }
+    } catch (error) {
+      console.error("Error updating shared state during seek:", error);
+    }
+  };
+
+  const handleDragStart = () => {
+    if (isPlaying) {
+      setIsPlaying(false);
+      
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
+      }
+    }
+    
+    setIsSeeking(true);
+    
+    try {
+      if (collaborationRef.current?.doc) {
+        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+        const currentTime = Date.now();
+        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('isPlaying', false);
+          collaborationRef.current.yTimeline.set('playbackController', null);
+          
+          if (!inTransition || role !== 'interviewer') {
+            collaborationRef.current.yState.set('operationApplier', null);
+          }
+        });
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('controlledBy', session?.user?.email);
+          collaborationRef.current.yTimeline.set('isSeeking', true);
+          collaborationRef.current.yTimeline.set('seekingUser', session?.user?.email);
+        });
+      }
+    } catch (error) {
+      console.error("Error updating shared state during drag start:", error);
+    }
   };
   
   const handleDragEnd = () => {
-    collaborationRef.current?.stopReplay();
-    collaborationRef.current?.releaseTimelineControl();
+    setIsSeeking(false);
+    
+    try {
+      if (collaborationRef.current?.doc) {
+        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+        const currentTime = Date.now();
+        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('controlledBy', null);
+          collaborationRef.current.yTimeline.set('isSeeking', false);
+          collaborationRef.current.yTimeline.set('seekingUser', null);
+          
+          if (!inTransition || role !== 'interviewer') {
+            collaborationRef.current.yState.set('operationApplier', null);
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error updating shared state during drag end:", error);
+    }
   };
 
-  const reset = async () => {
+  const reset = () => {
     if (isPlaying) {
-      collaborationRef.current?.setPlaying(false);
-      collaborationRef.current?.yTimeline.set('playbackController', null);
+      setIsPlaying(false);
+      
       if (playIntervalRef.current) {
         clearInterval(playIntervalRef.current);
         playIntervalRef.current = null;
       }
     }
-
-    await collaborationRef.current?.requestTimelineControl();
+    
     setCurrentTime(0);
-    await collaborationRef.current?.updateTimeline(0);
-    collaborationRef.current?.releaseTimelineControl();
+    
+    try {
+      if (collaborationRef.current?.doc) {
+        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+        const currentTime = Date.now();
+        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('isPlaying', false);
+          collaborationRef.current.yTimeline.set('playbackController', null);
+          
+          if (!inTransition || role !== 'interviewer') {
+            collaborationRef.current.yState.set('operationApplier', null);
+          }
+        });
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('controlledBy', null);
+          collaborationRef.current.yTimeline.set('currentTime', 0);
+        });
+      }
+    } catch (error) {
+      console.error("Error updating shared state during reset:", error);
+    }
   };
 
   const addNoteAnchor = () => {
     notepadRef.current?.setManualTimestamp();
   };
 
-  const handleTimestampClick = async (timestamp) => {
-    if (roomState === 'ARCHIVED') {
-      if (isPlaying) {
-        collaborationRef.current?.setPlaying(false);
-        collaborationRef.current?.yTimeline.set('playbackController', null);
-        if (playIntervalRef.current) {
-          clearInterval(playIntervalRef.current);
-          playIntervalRef.current = null;
-        }
+  const handleTimestampClick = (timestamp) => {
+    if (roomState !== 'ARCHIVED') {
+      return;
+    }
+    
+    if (isPlaying) {
+      setIsPlaying(false);
+      
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
       }
-
-      await collaborationRef.current?.requestTimelineControl();
-      collaborationRef.current?.startReplay(session.user.email);
-      
-      const seekTime = timestamp - startTimeRef.current;
-      setCurrentTime(seekTime);
-      await collaborationRef.current?.updateTimeline(seekTime);
-      
-      collaborationRef.current?.stopReplay();
-      collaborationRef.current?.releaseTimelineControl();
+    }
+    
+    const seekTime = timestamp - startTimeRef.current;
+    setCurrentTime(seekTime);
+    
+    try {
+      if (collaborationRef.current?.doc) {
+        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
+        const currentTime = Date.now();
+        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+        
+        if (isPlaying) {
+          collaborationRef.current.doc.transact(() => {
+            collaborationRef.current.yTimeline.set('isPlaying', false);
+            collaborationRef.current.yTimeline.set('playbackController', null);
+            
+         
+            if (!inTransition || role !== 'interviewer') {
+              collaborationRef.current.yState.set('operationApplier', null);
+            }
+          });
+        }
+        
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('controlledBy', null);
+          collaborationRef.current.yTimeline.set('currentTime', seekTime);
+        });
+      }
+    } catch (error) {
+      console.error("Error updating shared state during timestamp click:", error);
     }
   };
 
@@ -528,38 +785,24 @@ const InterviewRoom = () => {
             role={role}
             remotePointer={remotePointers}
             initialOperations={operations}
-            initialContent=""  
+            initialContent=""
+            roomState={roomState}
           />
-          {/*
-              <NotePad 
-              baseTimeRef={startTimeRef}
+          {role === 'interviewer' ? (
+            <InterviewerPanel
+              startTimeRef={startTimeRef}
               roomState={roomState}
               endTimeRef={endTimeRef}
-              ref={notepadRef}
-              onTimestampClick={handleTimestampClick}
+              notepadRef={notepadRef}
+              handleTimestampClick={handleTimestampClick}
               currentTime={currentTime}
-              initialContent={archivedNotes}
-              initialNoteLines={archivedNoteLines}
-              onSeek={handleSeek}
+              archivedNotes={archivedNotes}
+              archivedNoteLines={archivedNoteLines}
+              handleSeek={handleSeek}
+              handleLiveUpdate={handleLiveUpdate}
+              collaborationService={collaborationRef.current}
+              questionContent={archivedQuestionContent}
             />
-              */}
-
-          {role === 'interviewer' ? (
-            
-              <InterviewerPanel
-                startTimeRef={startTimeRef}
-                roomState={roomState}
-                endTimeRef={endTimeRef}
-                notepadRef={notepadRef}
-                handleTimestampClick={handleTimestampClick}
-                currentTime={currentTime}
-                archivedNotes={archivedNotes}
-                archivedNoteLines={archivedNoteLines}
-                handleSeek={handleSeek}
-                handleLiveUpdate={handleLiveUpdate}
-                collaborationService={collaborationRef.current}
-                questionContent={archivedQuestionContent}
-              />
           ) : (
             <div className="flex flex-col gap-3 overflow-hidden">
               <div className="flex flex-row w-[500px] px-8 py-8 border border-gray-200 rounded-lg bg-white">
@@ -570,61 +813,61 @@ const InterviewRoom = () => {
             </div>
           )}
         </div>
+        
+        {roomState === 'ARCHIVED' && (              
+          <Timeline
+            currentTime={currentTime}
+            duration={duration}
+            isPlaying={isPlaying}
+            isInterviewActive={roomState === 'ACTIVE'}
+            operations={operations}
+            onSeek={handleSeek}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onTogglePlay={togglePlayback}
+            onReset={reset}
+            role={role}
+            timelineController={timelineController}
+            userId={session?.user?.email}
+            uploadStatus={uploadStatus}
+            uploadStatuses={uploadStatuses}
+          />
+        )}
+      </div>
 
-        <div className="flex flex-col gap-2 mt-4 w-full">
-          {roomState === 'CREATED' && role === 'interviewer' && (
-            <div className='flex flex-row gap-4'>
-              <Button 
-                onClick={startInterview}
-                disabled={!bothParticipantsPresent || !bothVideosReady}
-                variant="default"
-              >
-                {!bothParticipantsPresent 
-                  ? "Waiting for both participants..." 
-                  : !bothVideosReady
-                  ? "Waiting for video setup..."
-                  : "Start Interview"}
-              </Button>
-            </div>
-          )}
+      <div className="flex flex-col gap-2 mt-4 w-full">
+        {roomState === 'CREATED' && role === 'interviewer' && (
+          <div className='flex flex-row gap-4'>
+            <Button 
+              onClick={startInterview}
+              disabled={!bothParticipantsPresent || !bothVideosReady}
+              variant="default"
+            >
+              {!bothParticipantsPresent 
+                ? "Waiting for both participants..." 
+                : !bothVideosReady
+                ? "Waiting for video setup..."
+                : "Start Interview"}
+            </Button>
+          </div>
+        )}
 
-          {roomState === 'ACTIVE' && role === 'interviewer' && (
-            <div className='flex flex-row gap-4'>
-              <Button 
-                onClick={addNoteAnchor}
-                variant="secondary"
-              >
-                Add Note Anchor
-              </Button>
-              <Button 
-                onClick={endInterview}
-                variant="destructive"
-              >
-                End Interview
-              </Button>
-            </div>
-          )}
-
-          {roomState === 'ARCHIVED' && (              
-            <Timeline
-              currentTime={currentTime}
-              duration={duration}
-              isPlaying={isPlaying}
-              isInterviewActive={roomState === 'ACTIVE'}
-              operations={operations}
-              onSeek={handleSeek}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-              onTogglePlay={togglePlayback}
-              onReset={reset}
-              role={role}
-              timelineController={timelineController}
-              userId={session?.user?.email}
-              uploadStatus={uploadStatus}
-              uploadStatuses={uploadStatuses}
-            />
-          )}
-        </div>
+        {roomState === 'ACTIVE' && role === 'interviewer' && (
+          <div className='flex flex-row gap-4'>
+            <Button 
+              onClick={addNoteAnchor}
+              variant="secondary"
+            >
+              Add Note Anchor
+            </Button>
+            <Button 
+              onClick={endInterview}
+              variant="destructive"
+            >
+              End Interview
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

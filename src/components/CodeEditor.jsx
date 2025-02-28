@@ -45,6 +45,7 @@ const CodeEditor = ({
   remotePointer,
   initialContent = '',
   initialOperations = [],
+  roomState = 'CREATED',
 }) => {
   const [content, setContent] = useState(initialContent);
   const [operations, setOperations] = useState([]);
@@ -123,13 +124,14 @@ const CodeEditor = ({
         from: fromA,
         to: toA,
         text: inserted.toString(),
-        timestamp: Date.now() - interviewStartTime
+        timestamp: Date.now() - interviewStartTime,
+        source: userId 
       });
     });
 
     setContent(value);
     const newOps = [...operations, ...changes];
-    const newDuration = Math.max(...newOps.map(op => op.timestamp));
+    const newDuration = Math.max(...newOps.map(op => op.timestamp), 0);
     setOperations(newOps);
     onOperationsUpdate?.(newOps, newDuration);
   };
@@ -137,13 +139,20 @@ const CodeEditor = ({
   const getContentAtTime = (targetTime) => {
     try {
       let result = '';
-      console.log(operations)
-      const sortedOps = [...operations].sort((a, b) => a.timestamp - b.timestamp);
-      for (const op of sortedOps) {
-        if (op.timestamp > targetTime) break;
-        const fromPos = Math.min(op.from, result.length);
-        const toPos = Math.min(op.to, result.length);
-        result = result.slice(0, fromPos) + op.text + result.slice(toPos);
+      const currentApplier = collaborationRef.current?.yState.get('operationApplier');
+      const transitionTimestamp = collaborationRef.current?.yState.get('transitionTimestamp');
+      const currentTime = Date.now();
+      const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+      
+     
+      if (!isPlaying || currentApplier === userId || (inTransition && role === 'interviewer')) {
+        const sortedOps = [...operations].sort((a, b) => a.timestamp - b.timestamp);
+        for (const op of sortedOps) {
+          if (op.timestamp > targetTime) break;
+          const fromPos = Math.min(op.from, result.length);
+          const toPos = Math.min(op.to, result.length);
+          result = result.slice(0, fromPos) + op.text + result.slice(toPos);
+        }
       }
       return result;
     } catch (error) {
@@ -169,16 +178,37 @@ const CodeEditor = ({
   useEffect(() => {
     if (!roomId || !userId || !role) return;
 
-    collaborationRef.current = new CollaborationService(roomId, userId, role);
+    if (!collaborationRef.current) {
+      collaborationRef.current = new CollaborationService(roomId, userId, role);
+    }
 
     return () => {
       collaborationRef.current?.destroy();
+      collaborationRef.current = null;
     };
   }, [roomId, userId, role]);
 
   useEffect(() => {
-    setOperations(initialOperations);
-  }, [initialOperations]);
+    const currentApplier = collaborationRef.current?.yState.get('operationApplier');
+    const transitionTimestamp = collaborationRef.current?.yState.get('transitionTimestamp');
+    const currentTime = Date.now();
+    const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+    
+    const shouldApplyOperations = !isPlaying || 
+      currentApplier === userId || 
+      (inTransition && role === 'interviewer');
+    
+    if (shouldApplyOperations) {
+      const filteredOps = initialOperations.filter(op => 
+        !op.source || 
+        op.source === userId ||
+        (roomState === 'ARCHIVED' && isPlaying)
+      );
+      setOperations(filteredOps);
+    } else {
+      setOperations([]);
+    }
+  }, [initialOperations, userId, roomState, isPlaying, role]);
 
   const scrollHander = (view) => {
     const currentScroll = scrollerRef.current?.scrollTop || 0;

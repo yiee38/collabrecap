@@ -11,6 +11,8 @@
 !.yarn/releases
 !.yarn/versions
 
+nginx.conf
+
 #server data
 */server/data
 

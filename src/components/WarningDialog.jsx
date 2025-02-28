@@ -15,14 +15,14 @@ const WarningDialog = ({ isOpen, onClose, onConfirm, message }) => {
     <AlertDialog open={isOpen} onOpenChange={onClose}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete Timestamp?</AlertDialogTitle>
+          <AlertDialogTitle>{message.includes('unlink') ? 'Delete Timestamp?' : 'Replace Timestamp?'}</AlertDialogTitle>
           <AlertDialogDescription>
             {message}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm}>Delete</AlertDialogAction>
+          <AlertDialogAction onClick={onConfirm}>{message.includes('unlink') ? 'Delete' : 'Replace'}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

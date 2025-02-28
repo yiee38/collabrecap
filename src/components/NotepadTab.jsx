@@ -119,16 +119,48 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
       if (!quillRef.current) return;
       const quillEditor = quillRef.current.getEditor();
       const selection = quillEditor.getSelection();
-      if (!selection) return;
-
-      const [leaf] = quillEditor.getLeaf(selection.index);
-      const currentLine = leaf?.parent?.domNode;
-
-      if (currentLine) {
-        console.log(Date.now().toString());
+      
+      if (selection) {
+        // Handle selected line
+        const [leaf] = quillEditor.getLeaf(selection.index);
+        const currentLine = leaf?.parent?.domNode;
+        
+        if (currentLine) {
+          const hasTimestamp = currentLine.hasAttribute('data-timestamp');
+          if (hasTimestamp) {
+            setWarningMessage(`Are you sure you want to update the timestamp?`);
+            setIsWarningOpen(true);
+            setPendingLinkLine({ number: selection.index });
+            return;
+          }
+          
+          const content = currentLine.textContent;
+          if (!content.trim()) {
+            quillEditor.insertText(selection.index, `Added timestamp #${lineNumbers.length + 1})`);
+          }
+          handleTextUpdate(null, null, 'user');
+        }
+      } else {
+        // Handle no selection - check last line
+        const lastIndex = quillEditor.getLength() - 1;
+        const [leaf] = quillEditor.getLeaf(lastIndex);
+        const lastLine = leaf?.parent?.domNode;
+        
+        if (lastLine) {
+          const content = lastLine.textContent;
+          if (!content.trim()) {
+            // Last line is empty, add timestamp text
+            quillEditor.insertText(lastIndex, `Added timestamp #${lineNumbers.length + 1})`);
+          } else {
+            // Last line has content, add new line
+            quillEditor.insertText(lastIndex, '\n');
+            quillEditor.insertText(lastIndex + 1, `Added timestamp #${lineNumbers.length + 1})`);
+          }
+          handleTextUpdate(null, null, 'user');
+        }
       }
     }
-  }), []);
+  }), [lineNumbers.length]);
 
   useEffect(() => {
     roomStateRef.current = roomState;
@@ -279,7 +311,39 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
 
   const handleConfirmLink = () => {
     if (pendingLinkLine) {
-      console.log(`Linked/Unlinked timestamp: ${formatTime(pendingLinkLine.time)}`);
+      const quillEditor = quillRef.current.getEditor();
+      const [leaf] = quillEditor.getLeaf(pendingLinkLine.number);
+      const currentLine = leaf?.parent?.domNode;
+      
+      if (currentLine) {
+        if (warningMessage.includes('unlink') && roomStateRef.current === 'ACTIVE') {
+          const newTimestamp = Date.now().toString();
+          currentLine.setAttribute('data-timestamp', newTimestamp);
+          currentLine.setAttribute('data-linked', 'true');
+          
+          // Update lineNumbers immediately with new timestamp
+          const updatedLineNumbers = [...lineNumbers];
+          const lineIndex = updatedLineNumbers.findIndex(line => line.number === pendingLinkLine.number);
+          if (lineIndex !== -1) {
+            updatedLineNumbers[lineIndex] = {
+              ...updatedLineNumbers[lineIndex],
+              time: parseInt(newTimestamp),
+              linked: true
+            };
+            setLineNumbers(updatedLineNumbers);
+          }
+        } else {
+          // Update timestamp
+          if (roomStateRef.current === 'ARCHIVED') {
+            const timelinePosition = baseTimeRef.current + currentTimeRef.current;
+            currentLine.setAttribute('data-timestamp', timelinePosition.toString());
+          } else {
+            currentLine.setAttribute('data-timestamp', Date.now().toString());
+          }
+          currentLine.setAttribute('data-linked', 'true');
+        }
+        handleTextUpdate(null, null, 'user');
+      }
     }
     setIsWarningOpen(false);
     setWarningMessage('');

@@ -435,6 +435,23 @@ client.connect().then(async () => {
       }
     });
 
+    socket.on('room:update_operations', async ({ roomId, operations }) => {
+      const room = activeRooms.get(roomId);
+      if (room && room.state === 'ARCHIVED') {
+        room.codeOperations = operations;
+        
+        try {
+          await client.db("collabrecap").collection('archivedRooms').updateOne(
+            { id: roomId },
+            { $set: { codeOperations: operations } }
+          );
+          console.log(`Updated operations for room ${roomId}`);
+        } catch (error) {
+          console.error('Error updating operations:', error);
+        }
+      }
+    });
+
     socket.on('disconnect', async () => {
       console.log('Client disconnected:', socket.id);
   

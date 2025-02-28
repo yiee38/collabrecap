@@ -27,27 +27,41 @@ class CollaborationService {
     this.yState = this.doc.getMap('interviewState');
     this.yTimeline = this.doc.getMap('timeline');
 
-    if (!this.yState.get('status')) {
-      this.yState.set('status', 'waiting');
-    }
-    if (!this.yTimeline.get('currentTime')) {
-      this.yTimeline.set('currentTime', 0);
-    }
-    if (!this.yTimeline.get('controlledBy')) {
-      this.yTimeline.set('controlledBy', null);
-    }
-    if (!this.yTimeline.get('isPlaying')) {
-      this.yTimeline.set('isPlaying', false);
-    }
-    if (!this.yTimeline.get('playbackController')) {
-      this.yTimeline.set('playbackController', null);
-    }
-    if (!this.yState.get('isReplaying')) {
-      this.yState.set('isReplaying', false);
-    }
-    if (!this.yState.get('replayController')) {
-      this.yState.set('replayController', null);
-    }
+    this.doc.transact(() => {
+      if (!this.yState.get('status')) {
+        this.yState.set('status', 'waiting');
+      }
+      if (!this.yState.get('operationApplier')) {
+        this.yState.set('operationApplier', null);
+      }
+      if (!this.yState.get('operationsInitialized')) {
+        this.yState.set('operationsInitialized', false);
+      }
+      if (!this.yState.get('operationsInitializer')) {
+        this.yState.set('operationsInitializer', null);
+      }
+      if (!this.yState.get('transitionTimestamp')) {
+        this.yState.set('transitionTimestamp', null);
+      }
+      if (!this.yTimeline.get('currentTime')) {
+        this.yTimeline.set('currentTime', 0);
+      }
+      if (!this.yTimeline.get('controlledBy')) {
+        this.yTimeline.set('controlledBy', null);
+      }
+      if (!this.yTimeline.get('isPlaying')) {
+        this.yTimeline.set('isPlaying', false);
+      }
+      if (!this.yTimeline.get('playbackController')) {
+        this.yTimeline.set('playbackController', null);
+      }
+      if (!this.yState.get('isReplaying')) {
+        this.yState.set('isReplaying', false);
+      }
+      if (!this.yState.get('replayController')) {
+        this.yState.set('replayController', null);
+      }
+    });
     
     this.undoManager = new Y.UndoManager(this.yText);
 
@@ -264,15 +278,33 @@ class CollaborationService {
   setPlaying(isPlaying) {
     const currentController = this.yTimeline.get('controlledBy');
     const playbackController = this.yTimeline.get('playbackController');
+    const currentApplier = this.yState.get('operationApplier');
+    const transitionTimestamp = this.yState.get('transitionTimestamp');
+    const currentTime = Date.now();
+    const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
     
-    if (currentController === this.userId || playbackController === this.userId) {
+    if (!isPlaying || currentController === this.userId || playbackController === this.userId) {
       this.doc.transact(() => {
         this.yTimeline.set('isPlaying', isPlaying);
         if (!isPlaying) {
           this.yTimeline.set('playbackController', null);
+          if (!inTransition || this.role !== 'interviewer') {
+            this.yState.set('operationApplier', null);
+          }
+        } else if (isPlaying && playbackController !== this.userId) {
+          this.yTimeline.set('playbackController', this.userId);
+          if (!currentApplier || (inTransition && this.role === 'interviewer')) {
+            this.yState.set('operationApplier', this.userId);
+          }
         }
       });
     }
+  }
+
+  isInTransition() {
+    const transitionTimestamp = this.yState.get('transitionTimestamp');
+    const currentTime = Date.now();
+    return transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
   }
 
   onTimelineUpdate(callback) {
@@ -323,10 +355,25 @@ class CollaborationService {
     this.yState.observe(() => {
       callback({
         status: this.yState.get('status'),
-        startTime: this.yState.get('startTime'),
-        endTime: this.yState.get('endTime')
+        isReplaying: this.yState.get('isReplaying'),
+        replayController: this.yState.get('replayController')
       });
     });
+  }
+
+  onStateChange(callback) {
+    const observer = () => {
+      callback({
+        operationsInitialized: this.yState.get('operationsInitialized'),
+        operationsInitializer: this.yState.get('operationsInitializer')
+      });
+    };
+    
+    this.yState.observe(observer);
+    
+    return () => {
+      this.yState.unobserve(observer);
+    };
   }
 
   getExtensions() {

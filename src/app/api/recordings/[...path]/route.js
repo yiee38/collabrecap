@@ -5,7 +5,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 async function fetchFromServer(path, options = {}) {
   const url = `${API_URL}/api/recordings${path}`;
   const res = await fetch(url, options);
-  if (!res.ok) throw new Error('Server request failed');
+  if (!res.ok && res.status !== 206) throw new Error('Server request failed');
   return res;
 }
 
@@ -13,19 +13,35 @@ export async function GET(request) {
   const path = request.nextUrl.pathname.replace('/api/recordings', '');
   
   try {
-    const res = await fetchFromServer(path);
+    const options = {};
+    const rangeHeader = request.headers.get('range');
+    if (rangeHeader && path.includes('/stream/')) {
+      options.headers = {
+        'Range': rangeHeader
+      };
+    }
+    
+    const res = await fetchFromServer(path, options);
 
     if (path.includes('/stream/')) {
       const video = await res.blob();
+      const headers = new Headers({
+        'Content-Type': 'video/webm',
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=3600',
+      });
+      
+      if (res.headers.has('content-length')) {
+        headers.set('Content-Length', res.headers.get('content-length'));
+      }
+      
+      if (res.headers.has('content-range')) {
+        headers.set('Content-Range', res.headers.get('content-range'));
+      }
+      
       return new Response(video, {
-        headers: {
-          'Content-Type': 'video/webm',
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'no-cache',
-          ...(res.headers.has('content-length') && {
-            'Content-Length': res.headers.get('content-length')
-          })
-        }
+        status: res.status,
+        headers
       });
     }
 

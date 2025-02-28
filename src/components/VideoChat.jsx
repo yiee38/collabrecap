@@ -186,12 +186,61 @@ const VideoChat = ({
   }, [roomId, isInterviewStarted]);
 
   useEffect(() => {
-    const initPeer = async () => {
-      if (peer) {
-        peer.destroy();
-      }
+    if (!isInterviewStarted && (recordings.local || recordings.remote)) {
+      const preloadVideo = (videoId) => {
+        if (!videoId) return;
+        
+        const link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'video';
+        link.href = `/api/recordings/stream/${videoId}`;
+        link.setAttribute('fetchpriority', 'low');
+        document.head.appendChild(link);
+        
+        return () => {
+          document.head.removeChild(link);
+        };
+      };
+      
+      const cleanupLocal = recordings.local ? preloadVideo(recordings.local.id) : null;
+      const cleanupRemote = recordings.remote ? preloadVideo(recordings.remote.id) : null;
+      
+      return () => {
+        cleanupLocal?.();
+        cleanupRemote?.();
+      };
+    }
+  }, [isInterviewStarted, recordings]);
 
-      const peerConfig = process.env.NODE_ENV === 'production' ? {
+  const handleVideoError = async (videoRef, recordingId, isLocal) => {
+    console.error(`Error loading ${isLocal ? 'local' : 'remote'} video`);
+    
+    try {
+      const res = await fetch(`/api/recordings/check/${recordingId}`);
+      const data = await res.json();
+      
+      if (data.exists) {
+        if (videoRef.current) {
+          videoRef.current.load();
+        }
+      } else {
+        console.error(`Recording ${recordingId} does not exist on the server`);
+        setUploadStatus(`${isLocal ? 'Local' : 'Remote'} recording not found on server`);
+      }
+    } catch (err) {
+      console.error('Failed to check recording:', err);
+    }
+  };
+
+  useEffect(() => {
+    const initPeer = async (retryCount = 0) => {
+      try {
+        if (peer) {
+          peer.destroy();
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+
+        const peerConfig = process.env.NODE_ENV === 'production' ? {
         host: window.location.hostname,
         path: '/peerService/peer',
         secure: window.location.protocol === 'https:'
@@ -247,6 +296,13 @@ const VideoChat = ({
 
       newPeer.on('error', (err) => {
         console.error('Peer connection error:', err);
+        
+        if (err.type === 'unavailable-id' && retryCount < 3) {
+          console.log(`Retrying peer connection in 2 seconds... (attempt ${retryCount + 1})`);
+          setTimeout(() => initPeer(retryCount + 1), 2000);
+          return;
+        }
+        
         onVideoReady(false);
       });
 
@@ -286,27 +342,39 @@ const VideoChat = ({
       });
 
       setPeer(newPeer);
-    };
+    } catch (error) {
+      console.error('Error in initPeer:', error);
+      if (retryCount < 3) {
+        console.log(`Retrying peer connection in 2 seconds... (attempt ${retryCount + 1})`);
+        setTimeout(() => initPeer(retryCount + 1), 2000);
+      }
+    }
+  };
 
-    initPeer();
+  initPeer();
 
     return () => {
-      if (localVideoRef.current?.srcObject) {
-        localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
-        localVideoRef.current.srcObject = null;
-      }
-      if (remoteVideoRef.current?.srcObject) {
-        remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
-        remoteVideoRef.current.srcObject = null;
-      }
+      const cleanup = async () => {
+        if (localVideoRef.current?.srcObject) {
+          localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+          localVideoRef.current.srcObject = null;
+        }
+        if (remoteVideoRef.current?.srcObject) {
+          remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+          remoteVideoRef.current.srcObject = null;
+        }
+        
+        if (peer) {
+          peer.destroy();
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        setIsLocalStreamReady(false);
+        setRemoteStream(null);
+        onVideoReady(false);
+      };
       
-      if (peer) {
-        peer.destroy();
-      }
-      
-      setIsLocalStreamReady(false);
-      setRemoteStream(null);
-      onVideoReady(false);
+      cleanup();
     };
   }, [roomId, role]);
 
@@ -528,9 +596,10 @@ const VideoChat = ({
               <video
                 ref={localRecordingRef}
                 playsInline
-                preload="auto"
+                preload="metadata"
                 className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
                 src={`/api/recordings/stream/${recordings.local.id}`}
+                onError={() => handleVideoError(localRecordingRef, recordings.local.id, true)}
               />
             </div>
             <div className="flex justify-center">
@@ -538,9 +607,10 @@ const VideoChat = ({
                 <video
                   ref={remoteRecordingRef}
                   playsInline
-                  preload="auto"
+                  preload="metadata"
                   className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
                   src={`/api/recordings/stream/${recordings.remote.id}`}
+                  onError={() => handleVideoError(remoteRecordingRef, recordings.remote.id, false)}
                 />
               ) : (
                 <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
