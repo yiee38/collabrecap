@@ -813,6 +813,38 @@ const InterviewRoom = () => {
             </div>
           )}
         </div>
+        {roomState === 'CREATED' && role === 'interviewer' && (
+          <div className='flex flex-row gap-4'>
+            <Button 
+              onClick={startInterview}
+              disabled={!bothParticipantsPresent || !bothVideosReady}
+              variant="default"
+            >
+              {!bothParticipantsPresent 
+                ? "Waiting for both participants..." 
+                : !bothVideosReady
+                ? "Waiting for video setup..."
+                : "Start Interview"}
+            </Button>
+          </div>
+        )}
+
+        {roomState === 'ACTIVE' && role === 'interviewer' && (
+          <div className='flex flex-row gap-4 justify-start w-full'>
+            <Button 
+              onClick={addNoteAnchor}
+              variant="secondary"
+            >
+              Add Note Anchor
+            </Button>
+            <Button 
+              onClick={endInterview}
+              variant="destructive"
+            >
+              End Interview
+            </Button>
+          </div>
+        )}
         
         {roomState === 'ARCHIVED' && (              
           <Timeline
@@ -836,38 +868,7 @@ const InterviewRoom = () => {
       </div>
 
       <div className="flex flex-col gap-2 mt-4 w-full">
-        {roomState === 'CREATED' && role === 'interviewer' && (
-          <div className='flex flex-row gap-4'>
-            <Button 
-              onClick={startInterview}
-              disabled={!bothParticipantsPresent || !bothVideosReady}
-              variant="default"
-            >
-              {!bothParticipantsPresent 
-                ? "Waiting for both participants..." 
-                : !bothVideosReady
-                ? "Waiting for video setup..."
-                : "Start Interview"}
-            </Button>
-          </div>
-        )}
-
-        {roomState === 'ACTIVE' && role === 'interviewer' && (
-          <div className='flex flex-row gap-4'>
-            <Button 
-              onClick={addNoteAnchor}
-              variant="secondary"
-            >
-              Add Note Anchor
-            </Button>
-            <Button 
-              onClick={endInterview}
-              variant="destructive"
-            >
-              End Interview
-            </Button>
-          </div>
-        )}
+        
       </div>
     </div>
   );
