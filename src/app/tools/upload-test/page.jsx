@@ -40,11 +40,11 @@ export default function UploadTestPage() {
       videoElement.src = '';
       videoElement.load();
       
-      videoElement.preload = 'metadata';
+      videoElement.preload = 'auto';
       videoElement.src = `/api/test/uploads/stream/${selectedFile.id}`;
       
       videoElement.onloadedmetadata = () => {
-        videoElement.preload = 'auto';
+        setVideoLoading(false);
       };
     }
   }, [selectedFile]);

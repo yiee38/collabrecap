@@ -28,9 +28,10 @@ export async function GET(request, { params }) {
     
     const video = await res.blob();
     const headers = new Headers({
-      'Content-Type': 'video/webm',
+      'Content-Type': res.headers.get('content-type') || 'video/webm',
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'public, max-age=60', 
+      'Transfer-Encoding': 'chunked',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
       'Access-Control-Allow-Headers': 'Range, Content-Type, Accept, Content-Range, X-Requested-With'
