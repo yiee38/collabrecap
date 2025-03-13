@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 export default function UploadTestPage() {
   const [uploading, setUploading] = useState(false);
@@ -8,7 +8,10 @@ export default function UploadTestPage() {
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [videoLoading, setVideoLoading] = useState(false);
+  const [videoError, setVideoError] = useState(null);
   const fileInputRef = useRef();
+  const videoRef = useRef();
 
   const fetchUploadedFiles = async () => {
     try {
@@ -27,6 +30,24 @@ export default function UploadTestPage() {
   useState(() => {
     fetchUploadedFiles();
   }, []);
+
+  useEffect(() => {
+    if (selectedFile && videoRef.current) {
+      setVideoLoading(true);
+      setVideoError(null);
+      
+      const videoElement = videoRef.current;
+      videoElement.src = '';
+      videoElement.load();
+      
+      videoElement.preload = 'metadata';
+      videoElement.src = `/api/test/uploads/stream/${selectedFile.id}`;
+      
+      videoElement.onloadedmetadata = () => {
+        videoElement.preload = 'auto';
+      };
+    }
+  }, [selectedFile]);
 
   const handleUpload = async (e) => {
     e.preventDefault();
@@ -119,6 +140,20 @@ export default function UploadTestPage() {
     }
   };
 
+  const handleVideoLoadStart = () => {
+    setVideoLoading(true);
+  };
+
+  const handleVideoCanPlay = () => {
+    setVideoLoading(false);
+  };
+
+  const handleVideoError = (e) => {
+    setVideoLoading(false);
+    setVideoError("Error loading video. The file may be corrupted or not accessible.");
+    console.error('Video loading error:', e);
+  };
+
   return (
     <div className="container mx-auto p-4 max-w-4xl">
       <h1 className="text-2xl font-bold mb-6">Video Upload Test Tool</h1>
@@ -199,10 +234,38 @@ export default function UploadTestPage() {
       {selectedFile && (
         <div className="mt-6 bg-white p-4 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">Test Playback</h2>
-          <div className="aspect-video bg-black rounded overflow-hidden">
+          <div className="aspect-video bg-black rounded overflow-hidden relative">
+            {videoLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
+                <div className="text-white">
+                  <svg className="animate-spin h-8 w-8 mr-3 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>Loading video...</span>
+                </div>
+              </div>
+            )}
+            {videoError && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
+                <div className="text-white text-center p-4">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-red-500 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p>{videoError}</p>
+                </div>
+              </div>
+            )}
             <video
-              src={`/api/test/uploads/stream/${selectedFile.id}`}
+              ref={videoRef}
+              onLoadStart={handleVideoLoadStart}
+              onCanPlay={handleVideoCanPlay}
+              onError={handleVideoError}
               controls
+              playsInline
+              crossOrigin="anonymous"
+              autoPlay={false}
+              muted={false}
               className="w-full h-full"
             />
           </div>

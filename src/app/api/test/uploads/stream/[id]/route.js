@@ -31,7 +31,9 @@ export async function GET(request, { params }) {
       'Content-Type': 'video/webm',
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=3600',
-      'Access-Control-Allow-Origin': '*'
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Content-Type, Accept, Content-Range, X-Requested-With'
     });
     
     if (res.headers.has('content-length')) {
@@ -42,8 +44,18 @@ export async function GET(request, { params }) {
       headers.set('Content-Range', res.headers.get('content-range'));
     }
     
+    if (rangeHeader && !res.headers.has('content-range') && res.headers.has('content-length')) {
+      const totalSize = parseInt(res.headers.get('content-length'));
+      const parts = rangeHeader.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+      
+      headers.set('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+      headers.set('Content-Length', String(end - start + 1));
+    }
+    
     return new Response(video, {
-      status: res.status,
+      status: rangeHeader ? 206 : 200,
       headers
     });
   } catch (error) {
