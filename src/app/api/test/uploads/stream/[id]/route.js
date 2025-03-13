@@ -6,53 +6,67 @@ export async function GET(request, { params }) {
   const { id } = params;
   
   try {
-    const options = {};
+    const options = { 
+      headers: {
+        'Accept': '*/*',
+      }
+    };
     const rangeHeader = request.headers.get('range');
     
     if (rangeHeader) {
-      options.headers = {
-        'Range': rangeHeader
-      };
+      options.headers['Range'] = rangeHeader;
+      console.log(`Streaming video with range request: ${rangeHeader}`);
     }
     
-    console.log(`Streaming test video ${id} with range:`, rangeHeader || 'none');
+    const response = await fetch(`${API_URL}/api/test/uploads/stream/${id}`, options);
     
-    const res = await fetch(`${API_URL}/api/test/uploads/stream/${id}`, options);
-    
-    if (!res.ok && res.status !== 206) {
+    if (!response.ok && response.status !== 206) {
+      console.error(`Failed to stream video: HTTP ${response.status}`);
       return NextResponse.json(
-        { error: 'Failed to stream test file' },
-        { status: res.status }
+        { error: 'Failed to stream test video' },
+        { status: response.status }
       );
     }
     
-    const video = await res.blob();
-    const headers = new Headers({
-      'Content-Type': res.headers.get('content-type') || 'video/webm',
-      'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=60', 
-      'Transfer-Encoding': 'chunked',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Range, Content-Type, Accept, Content-Range, X-Requested-With'
-    });
+    const video = await response.blob();
     
-    if (res.headers.has('content-length')) {
-      headers.set('Content-Length', res.headers.get('content-length'));
+    const headers = new Headers();
+    
+    const headersToForward = [
+      'content-type',
+      'content-length',
+      'content-range',
+      'accept-ranges',
+      'last-modified',
+      'etag'
+    ];
+    
+    for (const header of headersToForward) {
+      if (response.headers.has(header)) {
+        headers.set(header, response.headers.get(header));
+      }
     }
     
-    if (res.headers.has('content-range')) {
-      headers.set('Content-Range', res.headers.get('content-range'));
+    if (!headers.has('content-type')) {
+      headers.set('content-type', 'video/mp4');
     }
     
-    if (rangeHeader && !res.headers.has('content-range') && res.headers.has('content-length')) {
-      const totalSize = parseInt(res.headers.get('content-length'));
-      const parts = rangeHeader.replace(/bytes=/, "").split("-");
+    headers.set('accept-ranges', 'bytes');
+    
+    headers.set('access-control-allow-origin', '*');
+    headers.set('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+    headers.set('access-control-allow-headers', 'Range, Content-Type, Accept, Content-Range');
+    
+    headers.set('cache-control', 'public, max-age=300');
+    
+    if (rangeHeader && !headers.has('content-range') && headers.has('content-length')) {
+      const totalSize = parseInt(headers.get('content-length'), 10);
+      const parts = rangeHeader.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
       
-      headers.set('Content-Range', `bytes ${start}-${end}/${totalSize}`);
-      headers.set('Content-Length', String(end - start + 1));
+      headers.set('content-range', `bytes ${start}-${end}/${totalSize}`);
+      headers.set('content-length', String(end - start + 1));
     }
     
     return new Response(video, {
@@ -62,7 +76,7 @@ export async function GET(request, { params }) {
   } catch (error) {
     console.error('Error streaming test file:', error);
     return NextResponse.json(
-      { error: 'Server error streaming test file' },
+      { error: 'Server error streaming video file: ' + error.message },
       { status: 500 }
     );
   }

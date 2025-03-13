@@ -9,6 +9,7 @@ export default function UploadTestPage() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [videoLoading, setVideoLoading] = useState(false);
+  const [videoSeeking, setVideoSeeking] = useState(false);
   const [videoError, setVideoError] = useState(null);
   const fileInputRef = useRef();
   const videoRef = useRef();
@@ -34,6 +35,7 @@ export default function UploadTestPage() {
   useEffect(() => {
     if (selectedFile && videoRef.current) {
       setVideoLoading(true);
+      setVideoSeeking(false);
       setVideoError(null);
       
       const videoElement = videoRef.current;
@@ -148,8 +150,26 @@ export default function UploadTestPage() {
     setVideoLoading(false);
   };
 
+  const handleVideoSeeking = () => {
+    setVideoSeeking(true);
+  };
+
+  const handleVideoSeeked = () => {
+    setVideoSeeking(false);
+  };
+
+  const handleVideoWaiting = () => {
+    setVideoSeeking(true);
+  };
+
+  const handleVideoPlaying = () => {
+    setVideoSeeking(false);
+    setVideoLoading(false);
+  };
+
   const handleVideoError = (e) => {
     setVideoLoading(false);
+    setVideoSeeking(false);
     setVideoError("Error loading video. The file may be corrupted or not accessible.");
     console.error('Video loading error:', e);
   };
@@ -235,14 +255,14 @@ export default function UploadTestPage() {
         <div className="mt-6 bg-white p-4 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">Test Playback</h2>
           <div className="aspect-video bg-black rounded overflow-hidden relative">
-            {videoLoading && (
+            {(videoLoading || videoSeeking) && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
                 <div className="text-white">
                   <svg className="animate-spin h-8 w-8 mr-3 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  <span>Loading video...</span>
+                  <span>{videoLoading ? 'Loading video...' : 'Buffering...'}</span>
                 </div>
               </div>
             )}
@@ -260,6 +280,10 @@ export default function UploadTestPage() {
               ref={videoRef}
               onLoadStart={handleVideoLoadStart}
               onCanPlay={handleVideoCanPlay}
+              onSeeking={handleVideoSeeking}
+              onSeeked={handleVideoSeeked}
+              onWaiting={handleVideoWaiting}
+              onPlaying={handleVideoPlaying}
               onError={handleVideoError}
               controls
               playsInline
