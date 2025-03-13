@@ -121,7 +121,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
       const selection = quillEditor.getSelection();
       
       if (selection) {
-        // Handle selected line
         const [leaf] = quillEditor.getLeaf(selection.index);
         const currentLine = leaf?.parent?.domNode;
         
@@ -141,7 +140,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
           handleTextUpdate(null, null, 'user');
         }
       } else {
-        // Handle no selection - check last line
         const lastIndex = quillEditor.getLength() - 1;
         const [leaf] = quillEditor.getLeaf(lastIndex);
         const lastLine = leaf?.parent?.domNode;
@@ -149,10 +147,8 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
         if (lastLine) {
           const content = lastLine.textContent;
           if (!content.trim()) {
-            // Last line is empty, add timestamp text
             quillEditor.insertText(lastIndex, `Added timestamp #${lineNumbers.length + 1})`);
           } else {
-            // Last line has content, add new line
             quillEditor.insertText(lastIndex, '\n');
             quillEditor.insertText(lastIndex + 1, `Added timestamp #${lineNumbers.length + 1})`);
           }
@@ -321,7 +317,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
           currentLine.setAttribute('data-timestamp', newTimestamp);
           currentLine.setAttribute('data-linked', 'true');
           
-          // Update lineNumbers immediately with new timestamp
           const updatedLineNumbers = [...lineNumbers];
           const lineIndex = updatedLineNumbers.findIndex(line => line.number === pendingLinkLine.number);
           if (lineIndex !== -1) {
@@ -333,7 +328,6 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
             setLineNumbers(updatedLineNumbers);
           }
         } else {
-          // Update timestamp
           if (roomStateRef.current === 'ARCHIVED') {
             const timelinePosition = baseTimeRef.current + currentTimeRef.current;
             currentLine.setAttribute('data-timestamp', timelinePosition.toString());

@@ -9,6 +9,7 @@ const url = require('url');
 const {MongoClient, ObjectId, GridFSBucket} = require('mongodb');
 const path = require('path');
 const { initRecordingService } = require('./recordingServer');
+const { initTestUploadService } = require('./testUploadService');
 const multer = require('multer');
 const { Readable } = require('stream');
 
@@ -248,240 +249,247 @@ class Room {
 
 let gridFSBucket;
 
-client.connect().then(async () => {
-  console.log('Connected to MongoDB');
-  const db = client.db("collabrecap");
-  const roomsCollection = db.collection('archivedRooms');
-  gridFSBucket = new GridFSBucket(db, {
-    bucketName: 'recordings'
-  });
-
+async function initMongoDB() {
   try {
+    await client.connect();
+    console.log('Connected to MongoDB');
+    
+    const db = client.db("collabrecap");
+    const roomsCollection = db.collection('archivedRooms');
+    gridFSBucket = new GridFSBucket(db, {
+      bucketName: 'recordings'
+    });
+
     const recordingRouter = await initRecordingService(client);
     app.use('/api/recordings', recordingRouter);
-    console.log('Recording service initialized');
-  } catch (error) {
-    console.error('Failed to initialize recording service:', error);
-  }
-
-  await roomsCollection.createIndex({ id: 1 }, { unique: true });
-  await roomsCollection.createIndex({ "roles.interviewer": 1 });
-  await roomsCollection.createIndex({ "roles.interviewee": 1 });
-  await roomsCollection.createIndex({ createdAt: 1 });
-
-  io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id);
-    socket.data = {
-      userId: null,
-      roomId: null,
-      role: null
-    };
     
-    socket.on('room:create', ({ userId }) => {
-      const roomId = uuidv4();
-      const room = new Room(roomId, userId);
-      activeRooms.set(roomId, room);
-      socket.emit('room:created', { roomId, room: room.serialize() });
-    });
-  
-    socket.on('room:join', async ({ roomId, userId, role }) => {
-      let room = activeRooms.get(roomId);
+    const testUploadRouter = await initTestUploadService(client);
+    app.use('/api/test', testUploadRouter);
+    
+    await roomsCollection.createIndex({ id: 1 }, { unique: true });
+    await roomsCollection.createIndex({ "roles.interviewer": 1 });
+    await roomsCollection.createIndex({ "roles.interviewee": 1 });
+    await roomsCollection.createIndex({ createdAt: 1 });
+
+    io.on('connection', (socket) => {
+      console.log('Client connected:', socket.id);
+      socket.data = {
+        userId: null,
+        roomId: null,
+        role: null
+      };
       
-      if (!room) {
-        try {
-          const archivedRoom = await roomsCollection.findOne({ id: roomId });
-          if (archivedRoom) {
-            room = new Room(roomId);
-            room.state = 'ARCHIVED';
-            room.roles = archivedRoom.roles;
-            room.startedAt = archivedRoom.startedAt;
-            room.endedAt = archivedRoom.endedAt;
-            room.codeOperations = archivedRoom.codeOperations;
-            room.noteContent = archivedRoom.noteContent;
-            room.noteLines = archivedRoom.noteLines;
-            activeRooms.set(roomId, room);
-          } else {
+      socket.on('room:create', ({ userId }) => {
+        const roomId = uuidv4();
+        const room = new Room(roomId, userId);
+        activeRooms.set(roomId, room);
+        socket.emit('room:created', { roomId, room: room.serialize() });
+      });
+    
+      socket.on('room:join', async ({ roomId, userId, role }) => {
+        let room = activeRooms.get(roomId);
+        
+        if (!room) {
+          try {
+            const archivedRoom = await roomsCollection.findOne({ id: roomId });
+            if (archivedRoom) {
+              room = new Room(roomId);
+              room.state = 'ARCHIVED';
+              room.roles = archivedRoom.roles;
+              room.startedAt = archivedRoom.startedAt;
+              room.endedAt = archivedRoom.endedAt;
+              room.codeOperations = archivedRoom.codeOperations;
+              room.noteContent = archivedRoom.noteContent;
+              room.noteLines = archivedRoom.noteLines;
+              activeRooms.set(roomId, room);
+            } else {
+              socket.emit('error', { 
+                type: 'ROOM_ERROR',
+                message: 'Room not found' 
+              });
+              return;
+            }
+          } catch (err) {
+            console.error('Error accessing archived room:', err);
             socket.emit('error', { 
               type: 'ROOM_ERROR',
-              message: 'Room not found' 
+              message: 'Error accessing room' 
             });
             return;
           }
-        } catch (err) {
-          console.error('Error accessing archived room:', err);
+        }
+    
+        const joinCheck = room.canJoin(userId, role);
+        if (!joinCheck.allowed) {
           socket.emit('error', { 
-            type: 'ROOM_ERROR',
-            message: 'Error accessing room' 
+            type: 'JOIN_ERROR',
+            message: joinCheck.reason 
           });
           return;
         }
-      }
-  
-      const joinCheck = room.canJoin(userId, role);
-      if (!joinCheck.allowed) {
-        socket.emit('error', { 
-          type: 'JOIN_ERROR',
-          message: joinCheck.reason 
-        });
-        return;
-      }
-  
-      socket.data.userId = userId;
-      socket.data.roomId = roomId;
-      socket.data.role = role;
-      
-      socket.join(roomId);
-      room.assignRole(userId, role);
-      
-      io.to(roomId).emit('room:status', room.serialize());
-      socket.to(roomId).emit('room:user_joined', { userId, role });
-    });
-  
-    socket.on('room:start', ({ roomId, userId }) => {
-      const room = activeRooms.get(roomId);
-      
-      if (!room || room.roles.interviewer !== userId) {
-        socket.emit('error', { message: 'Unauthorized' });
-        return;
-      }
-
-      if (!room.hasAllParticipants()) {
-        socket.emit('error', { message: 'Waiting for all participants' });
-        return;
-      }
-  
-      if (room.start()) {
+    
+        socket.data.userId = userId;
+        socket.data.roomId = roomId;
+        socket.data.role = role;
+        
+        socket.join(roomId);
+        room.assignRole(userId, role);
+        
         io.to(roomId).emit('room:status', room.serialize());
-      }
-    });
-  
-    socket.on('room:end', async ({ roomId, userId, operations, duration, endTime, questionContent }) => {
-      const room = activeRooms.get(roomId);
-      if (room && room.roles.interviewer === userId) {
-        room.endedAt = endTime;
+        socket.to(roomId).emit('room:user_joined', { userId, role });
+      });
+    
+      socket.on('room:start', ({ roomId, userId }) => {
+        const room = activeRooms.get(roomId);
         
-        const archived = room.archive(operations, questionContent);
-        archived.duration = duration;
+        if (!room || room.roles.interviewer !== userId) {
+          socket.emit('error', { message: 'Unauthorized' });
+          return;
+        }
+
+        if (!room.hasAllParticipants()) {
+          socket.emit('error', { message: 'Waiting for all participants' });
+          return;
+        }
+    
+        if (room.start()) {
+          io.to(roomId).emit('room:status', room.serialize());
+        }
+      });
+    
+      socket.on('room:end', async ({ roomId, userId, operations, duration, endTime, questionContent }) => {
+        const room = activeRooms.get(roomId);
+        if (room && room.roles.interviewer === userId) {
+          room.endedAt = endTime;
+          
+          const archived = room.archive(operations, questionContent);
+          archived.duration = duration;
+          
+          try {
+            await client.db("collabrecap").collection('archivedRooms').updateOne(
+              { id: roomId },
+              { 
+                $set: { 
+                  ...archived,
+                  duration,
+                  endTime,
+                  questionContent
+                } 
+              },
+              { upsert: true }
+            );
+            
+            io.to(roomId).emit('room:ended', { endTime, duration });
+          } catch (error) {
+            console.error('Error archiving room:', error);
+          }
+        }
+      });
+    
+      socket.on('note:add', ({ note, lineNumbers }) => {
+        const { userId, roomId, role } = socket.data;
+        const room = activeRooms.get(roomId);
+        if (room) {
+          console.log('Saving note:', { content: note, lines: lineNumbers });
+          if (room.updateNote(note, lineNumbers)) {
+            io.to(roomId).emit('note:sync', { content: note, lines: lineNumbers });
+          }
+        }
+      });
+    
+      socket.on('room:peer_id', ({ roomId, peerId }) => {
+        if (!roomId || !peerId) return;
         
+        socket.data.peerId = peerId;
+        socket.to(roomId).emit('room:peer_id', { 
+          peerId,
+          userId: socket.data.userId 
+        });
+      });
+
+      socket.on('error', (error) => {
+        console.log(error)
+      })
+
+      socket.on('webrtc:signal', ({ roomId, signal }) => {
+        socket.to(roomId).emit('webrtc:signal', signal);
+      });
+
+      socket.on('video:ready', ({ roomId, role, ready }) => {
+        socket.to(roomId).emit('video:ready', { role, ready });
+      });
+    
+      socket.on('upload:status', async ({ roomId, role, status }) => {
+        io.to(roomId).emit('upload:status', { role, status });
+        
+        const room = activeRooms.get(roomId);
+        if (room) {
+          room.uploadStatus[role] = status === 'complete';
+        }
+
         try {
           await client.db("collabrecap").collection('archivedRooms').updateOne(
             { id: roomId },
-            { 
-              $set: { 
-                ...archived,
-                duration,
-                endTime,
-                questionContent
-              } 
-            },
-            { upsert: true }
+            { $set: { [`uploadStatus.${role}`]: status === 'complete' } }
           );
-          
-          io.to(roomId).emit('room:ended', { endTime, duration });
         } catch (error) {
-          console.error('Error archiving room:', error);
+          console.error('Error updating upload status:', error);
         }
-      }
-    });
-  
-    socket.on('note:add', ({ note, lineNumbers }) => {
-      const { userId, roomId, role } = socket.data;
-      const room = activeRooms.get(roomId);
-      if (room) {
-        console.log('Saving note:', { content: note, lines: lineNumbers });
-        if (room.updateNote(note, lineNumbers)) {
-          io.to(roomId).emit('note:sync', { content: note, lines: lineNumbers });
+      });
+
+      socket.on('room:update_operations', async ({ roomId, operations }) => {
+        const room = activeRooms.get(roomId);
+        if (room && room.state === 'ARCHIVED') {
+          room.codeOperations = operations;
+          
+          try {
+            await client.db("collabrecap").collection('archivedRooms').updateOne(
+              { id: roomId },
+              { $set: { codeOperations: operations } }
+            );
+            console.log(`Updated operations for room ${roomId}`);
+          } catch (error) {
+            console.error('Error updating operations:', error);
+          }
         }
-      }
-    });
-  
-    socket.on('room:peer_id', ({ roomId, peerId }) => {
-      if (!roomId || !peerId) return;
-      
-      socket.data.peerId = peerId;
-      socket.to(roomId).emit('room:peer_id', { 
-        peerId,
-        userId: socket.data.userId 
+      });
+
+      socket.on('disconnect', async () => {
+        console.log('Client disconnected:', socket.id);
+    
+        const { userId, roomId, role } = socket.data;
+        
+        if (userId && roomId) {
+          const room = activeRooms.get(roomId);
+          if (room) {
+            if (room.state === 'ACTIVE') {
+              const archived = room.archive();
+              io.to(roomId).emit('room:status', archived);
+              try {
+                await roomsCollection.insertOne({
+                  ...archived,
+                  noteLines: archived.noteLines
+                });
+              } catch (error) {
+                console.error('Error archiving room:', error);
+              }
+              activeRooms.delete(roomId);
+            } else {
+              room.removeParticipant(userId);
+              io.to(roomId).emit('room:status', room.serialize());
+              io.to(roomId).emit('room:user_left', { userId, role });
+            }
+          }
+        }
       });
     });
 
-    socket.on('error', (error) => {
-      console.log(error)
-    })
-
-    socket.on('webrtc:signal', ({ roomId, signal }) => {
-      socket.to(roomId).emit('webrtc:signal', signal);
-    });
-
-    socket.on('video:ready', ({ roomId, role, ready }) => {
-      socket.to(roomId).emit('video:ready', { role, ready });
-    });
-  
-    socket.on('upload:status', async ({ roomId, role, status }) => {
-      io.to(roomId).emit('upload:status', { role, status });
-      
-      const room = activeRooms.get(roomId);
-      if (room) {
-        room.uploadStatus[role] = status === 'complete';
-      }
-
-      try {
-        await client.db("collabrecap").collection('archivedRooms').updateOne(
-          { id: roomId },
-          { $set: { [`uploadStatus.${role}`]: status === 'complete' } }
-        );
-      } catch (error) {
-        console.error('Error updating upload status:', error);
-      }
-    });
-
-    socket.on('room:update_operations', async ({ roomId, operations }) => {
-      const room = activeRooms.get(roomId);
-      if (room && room.state === 'ARCHIVED') {
-        room.codeOperations = operations;
-        
-        try {
-          await client.db("collabrecap").collection('archivedRooms').updateOne(
-            { id: roomId },
-            { $set: { codeOperations: operations } }
-          );
-          console.log(`Updated operations for room ${roomId}`);
-        } catch (error) {
-          console.error('Error updating operations:', error);
-        }
-      }
-    });
-
-    socket.on('disconnect', async () => {
-      console.log('Client disconnected:', socket.id);
-  
-      const { userId, roomId, role } = socket.data;
-      
-      if (userId && roomId) {
-        const room = activeRooms.get(roomId);
-        if (room) {
-          if (room.state === 'ACTIVE') {
-            const archived = room.archive();
-            io.to(roomId).emit('room:status', archived);
-            try {
-              await roomsCollection.insertOne({
-                ...archived,
-                noteLines: archived.noteLines
-              });
-            } catch (error) {
-              console.error('Error archiving room:', error);
-            }
-            activeRooms.delete(roomId);
-          } else {
-            room.removeParticipant(userId);
-            io.to(roomId).emit('room:status', room.serialize());
-            io.to(roomId).emit('room:user_left', { userId, role });
-          }
-        }
-      }
-    });
-  });
-});
+    return client;
+  } catch (error) {
+    console.error('Failed to connect to MongoDB:', error);
+    throw error;
+  }
+}
 
 wss.on('error', (error) => {
   console.error('WebSocket Server Error:', error);
@@ -555,9 +563,14 @@ app.get('/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Socket.io on /socket.io`);
-  console.log(`Yjs WebSocket server on /yjs`);
-  console.log(`Peer server on /myapp`);
+  
+  try {
+    await initMongoDB();
+    console.log('Server fully initialized');
+  } catch (error) {
+    console.error('Server initialization error:', error);
+    process.exit(1);
+  }
 });

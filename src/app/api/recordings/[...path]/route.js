@@ -15,6 +15,7 @@ export async function GET(request) {
   try {
     const options = {};
     const rangeHeader = request.headers.get('range');
+    
     if (rangeHeader && path.includes('/stream/')) {
       options.headers = {
         'Range': rangeHeader
@@ -39,6 +40,9 @@ export async function GET(request) {
         headers.set('Content-Range', res.headers.get('content-range'));
       }
       
+      headers.set('Access-Control-Allow-Origin', '*');
+      headers.set('Accept-Ranges', 'bytes');
+      
       return new Response(video, {
         status: res.status,
         headers
@@ -48,7 +52,7 @@ export async function GET(request) {
     const data = await res.json();
     return NextResponse.json(data);
   } catch (err) {
-    console.log('API Error:', err);
+    console.error('API Error:', err);
     return NextResponse.json(
       { message: 'Could not load content' }, 
       { status: 500 }
@@ -69,7 +73,7 @@ export async function POST(request) {
     const data = await res.json();
     return NextResponse.json(data);
   } catch (err) {
-    console.log('Upload failed:', err);
+    console.error('Upload failed:', err);
     return NextResponse.json(
       { message: 'Could not save recording' }, 
       { status: 500 }
