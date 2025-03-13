@@ -28,8 +28,6 @@ export async function GET(request, { params }) {
       );
     }
     
-    const video = await response.blob();
-    
     const headers = new Headers();
     
     const headersToForward = [
@@ -52,11 +50,9 @@ export async function GET(request, { params }) {
     }
     
     headers.set('accept-ranges', 'bytes');
-    
     headers.set('access-control-allow-origin', '*');
     headers.set('access-control-allow-methods', 'GET, HEAD, OPTIONS');
     headers.set('access-control-allow-headers', 'Range, Content-Type, Accept, Content-Range');
-    
     headers.set('cache-control', 'public, max-age=300');
     
     if (rangeHeader && !headers.has('content-range') && headers.has('content-length')) {
@@ -69,7 +65,7 @@ export async function GET(request, { params }) {
       headers.set('content-length', String(end - start + 1));
     }
     
-    return new Response(video, {
+    return new Response(response.body, {
       status: rangeHeader ? 206 : 200,
       headers
     });
