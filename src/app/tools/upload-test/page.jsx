@@ -11,8 +11,11 @@ export default function UploadTestPage() {
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoSeeking, setVideoSeeking] = useState(false);
   const [videoError, setVideoError] = useState(null);
+  const [bufferingStrategy, setBufferingStrategy] = useState('auto');
+  const [videoQuality, setVideoQuality] = useState('auto');
   const fileInputRef = useRef();
   const videoRef = useRef();
+  const videoContainerRef = useRef();
 
   const fetchUploadedFiles = async () => {
     try {
@@ -28,7 +31,7 @@ export default function UploadTestPage() {
     }
   };
 
-  useState(() => {
+  useEffect(() => {
     fetchUploadedFiles();
   }, []);
 
@@ -42,13 +45,24 @@ export default function UploadTestPage() {
       videoElement.src = '';
       videoElement.load();
       
-      videoElement.preload = 'auto';
+      if (bufferingStrategy === 'eager') {
+        videoElement.preload = 'auto';
+        videoElement.setAttribute('autobuffer', '');
+      } else if (bufferingStrategy === 'lazy') {
+        videoElement.preload = 'metadata';
+      } else {
+        videoElement.preload = 'auto';
+      }
       
       if ('playbackRate' in videoElement) {
         videoElement.playbackRate = 1.0;
       }
       
-      videoElement.src = `/api/test/uploads/stream/${selectedFile.id}`;
+      const fileSize = selectedFile.size || 0;
+      const qualitySuffix = videoQuality !== 'auto' ? `?quality=${videoQuality}` : '';
+      const sizeSuffix = fileSize > 50 * 1024 * 1024 ? (qualitySuffix ? '&optimize=1' : '?optimize=1') : '';
+      
+      videoElement.src = `/api/test/uploads/stream/${selectedFile.id}${qualitySuffix}${sizeSuffix}`;
       
       const handleError = (e) => {
         console.error('Video element error:', e);
@@ -65,8 +79,25 @@ export default function UploadTestPage() {
       videoElement.onloadedmetadata = () => {
         setVideoLoading(false);
       };
+
+      videoElement.addEventListener('progress', () => {
+        if (videoElement.buffered.length > 0) {
+          const bufferedEnd = videoElement.buffered.end(videoElement.buffered.length - 1);
+          const duration = videoElement.duration;
+          const bufferedPercent = (bufferedEnd / duration) * 100;
+          
+          if (videoQuality === 'auto' && bufferedPercent < 10 && duration > 0 && bufferedEnd / duration < 0.1) {
+            if (videoSeeking) {
+              const currentTime = videoElement.currentTime;
+              setVideoQuality('low');
+              videoElement.src = `/api/test/uploads/stream/${selectedFile.id}?quality=low&optimize=1`;
+              videoElement.currentTime = currentTime;
+            }
+          }
+        }
+      });
     }
-  }, [selectedFile]);
+  }, [selectedFile, bufferingStrategy, videoQuality]);
 
   const handleUpload = async (e) => {
     e.preventDefault();
@@ -191,6 +222,20 @@ export default function UploadTestPage() {
     console.error('Video loading error:', e);
   };
 
+  const improveBuffering = () => {
+    if (videoRef.current) {
+      const currentTime = videoRef.current.currentTime;
+      const duration = videoRef.current.duration;
+      
+      if (duration && currentTime < duration - 30) {
+        const preloadSegment = new XMLHttpRequest();
+        preloadSegment.open('GET', `/api/test/uploads/stream/${selectedFile.id}?segment=${Math.floor((currentTime + 30) / 30)}`);
+        preloadSegment.setRequestHeader('Range', `bytes=${Math.floor((currentTime + 30) * videoRef.current.videoWidth * videoRef.current.videoHeight / 8)}-${Math.floor((currentTime + 60) * videoRef.current.videoWidth * videoRef.current.videoHeight / 8)}`);
+        preloadSegment.send();
+      }
+    }
+  };
+
   return (
     <div className="container mx-auto p-4 max-w-4xl">
       <h1 className="text-2xl font-bold mb-6">Video Upload Test Tool</h1>
@@ -271,7 +316,35 @@ export default function UploadTestPage() {
       {selectedFile && (
         <div className="mt-6 bg-white p-4 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">Test Playback</h2>
-          <div className="aspect-video bg-black rounded overflow-hidden relative">
+          
+          <div className="mb-4">
+            <label className="block text-sm font-medium mb-2">Buffering Strategy</label>
+            <select 
+              value={bufferingStrategy} 
+              onChange={(e) => setBufferingStrategy(e.target.value)}
+              className="block w-full text-sm border rounded p-2"
+            >
+              <option value="auto">Auto</option>
+              <option value="eager">Eager (Preload more)</option>
+              <option value="lazy">Lazy (Minimize preload)</option>
+            </select>
+          </div>
+          
+          <div className="mb-4">
+            <label className="block text-sm font-medium mb-2">Video Quality</label>
+            <select 
+              value={videoQuality} 
+              onChange={(e) => setVideoQuality(e.target.value)}
+              className="block w-full text-sm border rounded p-2"
+            >
+              <option value="auto">Auto</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+          
+          <div ref={videoContainerRef} className="aspect-video bg-black rounded overflow-hidden relative">
             {(videoLoading || videoSeeking) && (
               <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
                 <div className="text-white">
@@ -302,6 +375,7 @@ export default function UploadTestPage() {
               onWaiting={handleVideoWaiting}
               onPlaying={handleVideoPlaying}
               onError={handleVideoError}
+              onProgress={() => improveBuffering()}
               controls
               playsInline
               autoPlay={false}
