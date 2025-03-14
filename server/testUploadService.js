@@ -116,7 +116,6 @@ router.get('/uploads/stream/:id', async (req, res) => {
     const fileSize = fileInfo.length;
     
     res.set({
-      'X-Content-Type-Options': 'nosniff',
       'Content-Type': fileInfo.contentType || 'video/webm',
       'Accept-Ranges': 'bytes'
     });
@@ -127,33 +126,28 @@ router.get('/uploads/stream/:id', async (req, res) => {
       const start = parseInt(parts[0], 10);
       const requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
       
-      const defaultChunkSize = 2 * 1024 * 1024;
-      const maxChunkSize = 5 * 1024 * 1024;
+      const chunkSize = 1024 * 1024; 
       
       let end;
       if (requestedEnd && !isNaN(requestedEnd) && requestedEnd < fileSize) {
         end = requestedEnd;
       } else {
-        end = Math.min(start + defaultChunkSize, fileSize - 1);
-        
-        if (start === 0) {
-          end = Math.min(start + maxChunkSize, fileSize - 1);
-        }
+        end = Math.min(start + chunkSize, fileSize - 1);
       }
       
-      const chunkSize = (end - start) + 1;
+      const contentLength = (end - start) + 1;
       
       console.log(`Streaming test file range ${start}-${end}/${fileSize} for:`, {
         id: fileInfo._id.toString(),
         filename: fileInfo.filename,
-        chunkSize: `${Math.round(chunkSize/1024)}KB`
+        chunkSize: `${Math.round(contentLength/1024)}KB`
       });
       
       res.status(206);
       res.set({
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Content-Length': chunkSize,
-        'Cache-Control': 'public, max-age=3600'
+        'Content-Length': contentLength,
+        'Cache-Control': 'no-cache' 
       });
       
       const downloadStream = testGridFSBucket.openDownloadStream(fileId, {
@@ -179,7 +173,7 @@ router.get('/uploads/stream/:id', async (req, res) => {
       res.set({
         'Content-Length': fileSize,
         'Content-Disposition': `inline; filename="${fileInfo.filename}"`,
-        'Cache-Control': 'public, max-age=3600'
+        'Cache-Control': 'no-cache'
       });
       
       const downloadStream = testGridFSBucket.openDownloadStream(fileId);

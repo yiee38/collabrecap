@@ -43,41 +43,27 @@ export default function UploadTestPage() {
       videoElement.load();
       
       videoElement.preload = 'auto';
-      videoElement.crossOrigin = 'anonymous';
       
       if ('playbackRate' in videoElement) {
         videoElement.playbackRate = 1.0;
       }
       
-      setTimeout(() => {
-        videoElement.src = `/api/test/uploads/stream/${selectedFile.id}?t=${Date.now()}`;
-        
-        videoElement.addEventListener('progress', () => {
-          try {
-            if (videoElement.buffered.length > 0) {
-              const bufferedEnd = videoElement.buffered.end(videoElement.buffered.length - 1);
-              const duration = videoElement.duration;
-              console.log(`Video buffered: ${Math.round(bufferedEnd / duration * 100)}%`);
-            }
-          } catch (e) {
-            console.error('Error checking buffer:', e);
-          }
-        });
-      }, 100);
+      videoElement.src = `/api/test/uploads/stream/${selectedFile.id}`;
+      
+      const handleError = (e) => {
+        console.error('Video element error:', e);
+        console.error('Video network state:', videoElement.networkState);
+        console.error('Video ready state:', videoElement.readyState);
+        if (videoElement.error) {
+          console.error('Video error code:', videoElement.error.code);
+          console.error('Video error message:', videoElement.error.message);
+        }
+      };
+      
+      videoElement.addEventListener('error', handleError, true);
       
       videoElement.onloadedmetadata = () => {
         setVideoLoading(false);
-        
-        if (videoElement.duration && videoElement.duration !== Infinity) {
-          try {
-            videoElement.currentTime = 0.1;
-            setTimeout(() => {
-              videoElement.currentTime = 0;
-            }, 200);
-          } catch (e) {
-            console.warn('Could not preload video:', e);
-          }
-        }
       };
     }
   }, [selectedFile]);
@@ -318,7 +304,6 @@ export default function UploadTestPage() {
               onError={handleVideoError}
               controls
               playsInline
-              crossOrigin="anonymous"
               autoPlay={false}
               muted={false}
               preload="auto"
