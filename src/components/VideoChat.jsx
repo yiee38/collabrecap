@@ -457,13 +457,55 @@ const VideoChat = ({
         return;
       }
 
-      const tracks = [...localStream.getTracks(), ...remoteStream.getTracks()];
-      const combinedStream = new MediaStream(tracks);
+      const videoProcessor = (track) => {
+        const videoElem = document.createElement('video');
+        videoElem.srcObject = new MediaStream([track]);
+        videoElem.autoplay = true;
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = 480;
+        canvas.height = 360;
+        const ctx = canvas.getContext('2d');
+        
+        const processor = new MediaStream();
+        const draw = () => {
+          if (videoElem.videoWidth) {
+            ctx.drawImage(videoElem, 0, 0, canvas.width, canvas.height);
+            requestAnimationFrame(draw);
+          } else {
+            setTimeout(() => requestAnimationFrame(draw), 100);
+          }
+        };
+        draw();
+        
+        const canvasStream = canvas.captureStream(15);
+        return canvasStream.getVideoTracks()[0];
+      };
+
+      const lowResVideoTracks = [];
+      try {
+        const localVideoTrack = localStream.getVideoTracks()[0];
+        const remoteVideoTrack = remoteStream.getVideoTracks()[0];
+        
+        if (localVideoTrack) {
+          lowResVideoTracks.push(videoProcessor(localVideoTrack));
+        }
+        if (remoteVideoTrack) {
+          lowResVideoTracks.push(videoProcessor(remoteVideoTrack));
+        }
+      } catch (err) {
+        console.warn('Error processing video tracks:', err);
+        lowResVideoTracks.push(...localStream.getVideoTracks(), ...remoteStream.getVideoTracks());
+      }
+
+      const audioTracks = [...localStream.getAudioTracks(), ...remoteStream.getAudioTracks()];
+      
+      const combinedStream = new MediaStream([...lowResVideoTracks, ...audioTracks]);
 
       const recorder = new MediaRecorder(combinedStream, {
         mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 600000,
-        audioBitsPerSecond: 128000
+        videoBitsPerSecond: 100000,
+        audioBitsPerSecond: 96000
       });
 
       const uploadInterval = setInterval(() => {

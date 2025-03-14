@@ -43,10 +43,41 @@ export default function UploadTestPage() {
       videoElement.load();
       
       videoElement.preload = 'auto';
-      videoElement.src = `/api/test/uploads/stream/${selectedFile.id}`;
+      videoElement.crossOrigin = 'anonymous';
+      
+      if ('playbackRate' in videoElement) {
+        videoElement.playbackRate = 1.0;
+      }
+      
+      setTimeout(() => {
+        videoElement.src = `/api/test/uploads/stream/${selectedFile.id}?t=${Date.now()}`;
+        
+        videoElement.addEventListener('progress', () => {
+          try {
+            if (videoElement.buffered.length > 0) {
+              const bufferedEnd = videoElement.buffered.end(videoElement.buffered.length - 1);
+              const duration = videoElement.duration;
+              console.log(`Video buffered: ${Math.round(bufferedEnd / duration * 100)}%`);
+            }
+          } catch (e) {
+            console.error('Error checking buffer:', e);
+          }
+        });
+      }, 100);
       
       videoElement.onloadedmetadata = () => {
         setVideoLoading(false);
+        
+        if (videoElement.duration && videoElement.duration !== Infinity) {
+          try {
+            videoElement.currentTime = 0.1;
+            setTimeout(() => {
+              videoElement.currentTime = 0;
+            }, 200);
+          } catch (e) {
+            console.warn('Could not preload video:', e);
+          }
+        }
       };
     }
   }, [selectedFile]);
@@ -290,7 +321,9 @@ export default function UploadTestPage() {
               crossOrigin="anonymous"
               autoPlay={false}
               muted={false}
+              preload="auto"
               className="w-full h-full"
+              controlsList="nodownload nofullscreen"
             />
           </div>
           <div className="mt-4 flex justify-between">

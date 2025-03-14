@@ -19,10 +19,11 @@ async function initTestUploadService(mongoClient) {
     const db = mongoClient.db("collabrecap");
     
     testGridFSBucket = new GridFSBucket(db, {
-      bucketName: 'test_uploads'
+      bucketName: 'test_uploads',
+      chunkSizeBytes: 5 * 1024 * 1024
     });
     
-    console.log('Test upload service initialized with MongoDB');
+    console.log('Test upload service initialized with MongoDB (optimized for desktop video streaming)');
     return router;
   } catch (error) {
     console.error('Failed to initialize test upload service:', error);
@@ -114,24 +115,44 @@ router.get('/uploads/stream/:id', async (req, res) => {
     const fileInfo = files[0];
     const fileSize = fileInfo.length;
     
+    res.set({
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Type': fileInfo.contentType || 'video/webm',
+      'Accept-Ranges': 'bytes'
+    });
+    
     const range = req.headers.range;
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
+      
+      const defaultChunkSize = 2 * 1024 * 1024;
+      const maxChunkSize = 5 * 1024 * 1024;
+      
+      let end;
+      if (requestedEnd && !isNaN(requestedEnd) && requestedEnd < fileSize) {
+        end = requestedEnd;
+      } else {
+        end = Math.min(start + defaultChunkSize, fileSize - 1);
+        
+        if (start === 0) {
+          end = Math.min(start + maxChunkSize, fileSize - 1);
+        }
+      }
+      
       const chunkSize = (end - start) + 1;
       
       console.log(`Streaming test file range ${start}-${end}/${fileSize} for:`, {
         id: fileInfo._id.toString(),
-        filename: fileInfo.filename
+        filename: fileInfo.filename,
+        chunkSize: `${Math.round(chunkSize/1024)}KB`
       });
       
       res.status(206);
       res.set({
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
-        'Content-Type': fileInfo.contentType || 'video/webm',
         'Cache-Control': 'public, max-age=3600'
       });
       
@@ -140,14 +161,14 @@ router.get('/uploads/stream/:id', async (req, res) => {
         end: end + 1
       });
       
-      downloadStream.pipe(res);
-      
       downloadStream.on('error', (error) => {
         console.error('Test streaming error:', error);
         if (!res.headersSent) {
           res.status(500).json({ error: 'Streaming failed' });
         }
       });
+      
+      downloadStream.pipe(res);
     } else {
       console.log(`Streaming complete test file:`, {
         id: fileInfo._id.toString(),
@@ -157,9 +178,7 @@ router.get('/uploads/stream/:id', async (req, res) => {
       
       res.set({
         'Content-Length': fileSize,
-        'Content-Type': fileInfo.contentType || 'video/webm',
         'Content-Disposition': `inline; filename="${fileInfo.filename}"`,
-        'Accept-Ranges': 'bytes',
         'Cache-Control': 'public, max-age=3600'
       });
       
