@@ -13,6 +13,7 @@ export default function UploadTestPage() {
   const [videoError, setVideoError] = useState(null);
   const [bufferingStrategy, setBufferingStrategy] = useState('auto');
   const [videoQuality, setVideoQuality] = useState('auto');
+  const [bufferHealth, setBufferHealth] = useState(0);
   const fileInputRef = useRef();
   const videoRef = useRef();
   const videoContainerRef = useRef();
@@ -40,6 +41,7 @@ export default function UploadTestPage() {
       setVideoLoading(true);
       setVideoSeeking(false);
       setVideoError(null);
+      setBufferHealth(0);
       
       const videoElement = videoRef.current;
       videoElement.src = '';
@@ -52,6 +54,10 @@ export default function UploadTestPage() {
         videoElement.preload = 'metadata';
       } else {
         videoElement.preload = 'auto';
+      }
+      
+      if ('webkitAudioDecodedByteCount' in videoElement) {
+        videoElement.webkitPreservesPitch = true;
       }
       
       if ('playbackRate' in videoElement) {
@@ -96,6 +102,27 @@ export default function UploadTestPage() {
           }
         }
       });
+
+      const bufferMonitor = setInterval(() => {
+        if (videoElement.buffered.length > 0) {
+          const currentTime = videoElement.currentTime;
+          const bufferedEnd = videoElement.buffered.end(videoElement.buffered.length - 1);
+          const bufferedAhead = bufferedEnd - currentTime;
+          setBufferHealth(bufferedAhead);
+          
+          if (bufferedAhead < 2 && videoQuality !== 'low' && videoElement.readyState < 4) {
+            console.log('Buffer critically low, reducing quality');
+            setVideoQuality('low');
+            const currentTime = videoElement.currentTime;
+            videoElement.src = `/api/test/uploads/stream/${selectedFile.id}?quality=low&optimize=1`;
+            videoElement.currentTime = currentTime;
+          }
+        }
+      }, 1000);
+
+      return () => {
+        clearInterval(bufferMonitor);
+      };
     }
   }, [selectedFile, bufferingStrategy, videoQuality]);
 
@@ -223,15 +250,25 @@ export default function UploadTestPage() {
   };
 
   const improveBuffering = () => {
-    if (videoRef.current) {
-      const currentTime = videoRef.current.currentTime;
-      const duration = videoRef.current.duration;
+    if (videoRef.current && selectedFile) {
+      const videoElement = videoRef.current;
+      const currentTime = videoElement.currentTime;
+      const duration = videoElement.duration;
       
       if (duration && currentTime < duration - 30) {
-        const preloadSegment = new XMLHttpRequest();
-        preloadSegment.open('GET', `/api/test/uploads/stream/${selectedFile.id}?segment=${Math.floor((currentTime + 30) / 30)}`);
-        preloadSegment.setRequestHeader('Range', `bytes=${Math.floor((currentTime + 30) * videoRef.current.videoWidth * videoRef.current.videoHeight / 8)}-${Math.floor((currentTime + 60) * videoRef.current.videoWidth * videoRef.current.videoHeight / 8)}`);
-        preloadSegment.send();
+        for (let offset = 30; offset <= 90; offset += 20) {
+          if (currentTime + offset < duration) {
+            const preloadSegment = new XMLHttpRequest();
+            const segmentTime = Math.floor((currentTime + offset) / 30);
+            const endpoint = `/api/test/uploads/stream/${selectedFile.id}?segment=${segmentTime}`;
+            
+            preloadSegment.open('GET', endpoint, true);
+            preloadSegment.setRequestHeader('Range', `bytes=${Math.floor((currentTime + offset - 10) * 100000)}-${Math.floor((currentTime + offset + 10) * 100000)}`);
+            preloadSegment.send();
+            
+            console.debug(`Preloading segment at ${segmentTime} (${Math.round(currentTime + offset)} seconds)`);
+          }
+        }
       }
     }
   };
@@ -384,6 +421,25 @@ export default function UploadTestPage() {
               className="w-full h-full"
               controlsList="nodownload nofullscreen"
             />
+            
+            {/* Buffer Health Indicator */}
+            <div className="absolute bottom-12 left-0 right-0 px-4 z-5 pointer-events-none">
+              <div className="bg-gray-800 bg-opacity-80 rounded p-2 text-white text-xs">
+                <div className="flex justify-between mb-1">
+                  <span>Buffer: {bufferHealth.toFixed(1)}s</span>
+                  <span>Quality: {videoQuality}</span>
+                </div>
+                <div className="w-full bg-gray-700 rounded-full h-2">
+                  <div 
+                    className={`rounded-full h-2 ${
+                      bufferHealth < 2 ? 'bg-red-500' : 
+                      bufferHealth < 5 ? 'bg-yellow-500' : 'bg-green-500'
+                    }`} 
+                    style={{width: `${Math.min(bufferHealth/15 * 100, 100)}%`}}
+                  ></div>
+                </div>
+              </div>
+            </div>
           </div>
           <div className="mt-4 flex justify-between">
             <p className="text-sm">File ID: {selectedFile.id}</p>

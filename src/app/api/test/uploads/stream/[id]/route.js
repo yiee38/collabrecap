@@ -9,8 +9,8 @@ const CACHE_SETTINGS = {
   OPTIMIZED_CHUNKS: 7200
 };
 
-const CHUNK_SIZE = 2 * 1024 * 1024; 
-const MAX_PREFETCH_SIZE = 10 * 1024 * 1024; 
+const CHUNK_SIZE = 4 * 1024 * 1024;
+const MAX_PREFETCH_SIZE = 16 * 1024 * 1024;
 
 export async function GET(request, { params }) {
   const { id } = params;

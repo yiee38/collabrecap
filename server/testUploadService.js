@@ -126,7 +126,7 @@ router.get('/uploads/stream/:id', async (req, res) => {
       const start = parseInt(parts[0], 10);
       const requestedEnd = parts[1] ? parseInt(parts[1], 10) : undefined;
       
-      const chunkSize = 1024 * 1024; 
+      const chunkSize = 4 * 1024 * 1024;
       
       let end;
       if (requestedEnd && !isNaN(requestedEnd) && requestedEnd < fileSize) {
@@ -147,7 +147,7 @@ router.get('/uploads/stream/:id', async (req, res) => {
       res.set({
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Content-Length': contentLength,
-        'Cache-Control': 'no-cache' 
+        'Cache-Control': 'public, max-age=3600'
       });
       
       const downloadStream = testGridFSBucket.openDownloadStream(fileId, {
@@ -173,7 +173,7 @@ router.get('/uploads/stream/:id', async (req, res) => {
       res.set({
         'Content-Length': fileSize,
         'Content-Disposition': `inline; filename="${fileInfo.filename}"`,
-        'Cache-Control': 'no-cache'
+        'Cache-Control': 'public, max-age=3600'
       });
       
       const downloadStream = testGridFSBucket.openDownloadStream(fileId);
