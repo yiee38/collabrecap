@@ -14,6 +14,9 @@ export default function UploadTestPage() {
   const [bufferingStrategy, setBufferingStrategy] = useState('auto');
   const [videoQuality, setVideoQuality] = useState('auto');
   const [bufferHealth, setBufferHealth] = useState(0);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadedVideoUrl, setDownloadedVideoUrl] = useState(null);
   const fileInputRef = useRef();
   const videoRef = useRef();
   const videoContainerRef = useRef();
@@ -273,6 +276,62 @@ export default function UploadTestPage() {
     }
   };
 
+  const handleDownloadVideo = async () => {
+    if (!selectedFile) return;
+    
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadedVideoUrl(null);
+    
+    try {
+      const url = `/api/test/uploads/download/${selectedFile.id}`;
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url);
+      xhr.responseType = 'blob';
+      
+      xhr.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const progress = Math.round((event.loaded / event.total) * 100);
+          setDownloadProgress(progress);
+        }
+      };
+      
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const blob = xhr.response;
+          const objectUrl = URL.createObjectURL(blob);
+          setDownloadedVideoUrl(objectUrl);
+          setIsDownloading(false);
+          
+          if (videoRef.current) {
+            videoRef.current.src = objectUrl;
+            videoRef.current.load();
+            
+            videoRef.current.oncanplay = () => {
+              videoRef.current.play().catch(e => console.log('Auto-play prevented:', e));
+            };
+          }
+        } else {
+          console.error('Failed to download video');
+          setIsDownloading(false);
+          setVideoError('Failed to download video: ' + xhr.statusText);
+        }
+      };
+      
+      xhr.onerror = () => {
+        console.error('Error downloading video');
+        setIsDownloading(false);
+        setVideoError('Error downloading video. Please try again.');
+      };
+      
+      xhr.send();
+    } catch (error) {
+      console.error('Error downloading video:', error);
+      setIsDownloading(false);
+      setVideoError('Error downloading video: ' + error.message);
+    }
+  };
+
   return (
     <div className="container mx-auto p-4 max-w-4xl">
       <h1 className="text-2xl font-bold mb-6">Video Upload Test Tool</h1>
@@ -380,6 +439,42 @@ export default function UploadTestPage() {
               <option value="low">Low</option>
             </select>
           </div>
+
+          <div className="mb-4 flex space-x-2">
+            <button
+              onClick={handleDownloadVideo}
+              disabled={isDownloading}
+              className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 disabled:bg-gray-300"
+            >
+              {isDownloading ? 'Downloading...' : 'Download & Play'}
+            </button>
+            
+            {downloadedVideoUrl && (
+              <button
+                onClick={() => window.open(downloadedVideoUrl, '_blank')}
+                className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+              >
+                Open Downloaded Video
+              </button>
+            )}
+          </div>
+          
+          {isDownloading && (
+            <div className="mb-4">
+              <div className="flex justify-between mb-1">
+                <span className="text-sm font-medium">Download Progress: {downloadProgress}%</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2.5">
+                <div 
+                  className="bg-blue-600 h-2.5 rounded-full" 
+                  style={{width: `${downloadProgress}%`}}
+                ></div>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Please wait while the entire video downloads. This provides better playback performance.
+              </p>
+            </div>
+          )}
           
           <div ref={videoContainerRef} className="aspect-video bg-black rounded overflow-hidden relative">
             {(videoLoading || videoSeeking) && (

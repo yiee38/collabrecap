@@ -192,6 +192,47 @@ router.get('/uploads/stream/:id', async (req, res) => {
   }
 });
 
+router.get('/uploads/download/:id', async (req, res) => {
+  try {
+    const fileId = new ObjectId(req.params.id);
+    const files = await testGridFSBucket.find({ _id: fileId }).toArray();
+    
+    if (!files.length) {
+      return res.status(404).json({ error: 'Test file not found' });
+    }
+
+    const fileInfo = files[0];
+    const fileSize = fileInfo.length;
+    
+    console.log(`Downloading complete file:`, {
+      id: fileInfo._id.toString(),
+      filename: fileInfo.filename,
+      size: fileSize
+    });
+    
+    res.set({
+      'Content-Type': fileInfo.contentType || 'video/webm',
+      'Content-Length': fileSize,
+      'Content-Disposition': `attachment; filename="${fileInfo.filename}"`,
+      'Cache-Control': 'no-store'
+    });
+    
+    const downloadStream = testGridFSBucket.openDownloadStream(fileId);
+    
+    downloadStream.on('error', (error) => {
+      console.error('File download error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Download failed' });
+      }
+    });
+    
+    downloadStream.pipe(res);
+  } catch (error) {
+    console.error('Error downloading file:', error);
+    res.status(500).json({ error: 'Download failed' });
+  }
+});
+
 router.delete('/uploads/:id', async (req, res) => {
   try {
     const fileId = new ObjectId(req.params.id);
