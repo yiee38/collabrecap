@@ -165,15 +165,74 @@ const VideoChat = ({
 
   const fetchRecordings = async () => {
     try {
-      const res = await fetch(`/api/recordings/rooms/${roomId}/list`);
-      if (res.ok) {
-        const data = await res.json();
-        const localRec = data.recordings.find(r => r.role === role);
-        const remoteRec = data.recordings.find(r => r.role !== role);
-        setRecordings({ local: localRec || null, remote: remoteRec || null });
+      setUploadStatus('Loading recordings...');
+      console.log(`Fetching recordings for room: ${roomId}`);
+      
+      const res = await fetch(`/api/cloudinary/recordings?roomId=${roomId}`);
+      
+      if (!res.ok) {
+        let errorData;
+        try {
+          errorData = await res.json();
+        } catch (parseError) {
+          console.error('Error parsing error response:', parseError);
+          errorData = { 
+            error: `HTTP ${res.status}: ${res.statusText}`,
+            message: 'Could not parse error response'
+          };
+        }
+        
+        console.error('Failed to fetch recordings:', {
+          status: res.status,
+          statusText: res.statusText,
+          error: errorData.error,
+          message: errorData.message,
+          details: errorData.details
+        });
+        
+        setUploadStatus(`Failed to load recordings: ${errorData.error || res.statusText}`);
+        return;
       }
+      
+      let data;
+      try {
+        data = await res.json();
+      } catch (parseError) {
+        console.error('Error parsing recordings response:', parseError);
+        setUploadStatus('Invalid response format');
+        return;
+      }
+      
+      if (!data.recordings || !Array.isArray(data.recordings)) {
+        console.error('Unexpected response format:', data);
+        setUploadStatus('Invalid recordings data');
+        return;
+      }
+      
+      console.log(`Found ${data.recordings.length} recordings:`, 
+        data.recordings.map(r => `${r.role} (${Math.round(r.size/1024)}KB)`).join(', ')
+      );
+      
+      const localRec = data.recordings.find(r => r.role === role);
+      const remoteRec = data.recordings.find(r => r.role !== role);
+      
+      console.log('Local recording:', localRec ? 
+        `Found (${localRec.filename}, ${Math.round(localRec.size/1024)}KB)` : 
+        'Not found');
+      
+      console.log('Remote recording:', remoteRec ? 
+        `Found (${remoteRec.filename}, ${Math.round(remoteRec.size/1024)}KB)` : 
+        'Not found');
+      
+      setRecordings({ 
+        local: localRec || null, 
+        remote: remoteRec || null 
+      });
+      
+      setUploadStatus('');
     } catch (err) {
-      console.log('Could not load recordings:', err);
+      console.error('Error fetching recordings:', err);
+      setUploadStatus('Error loading recordings');
     }
   };
 
@@ -258,15 +317,16 @@ const VideoChat = ({
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ 
             video: {
-              width: { ideal: 640 },
-              height: { ideal: 480 },
-              frameRate: { ideal: 20 }
+              width: { ideal: 426, max: 640 },
+              height: { ideal: 320, max: 480 },
+              frameRate: { ideal: 12, max: 15 }
             }, 
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
               autoGainControl: true,
-              sampleRate: 44100
+              sampleRate: 22050,
+              channelCount: 1
             }
           });
           if (localVideoRef.current) {
@@ -310,15 +370,16 @@ const VideoChat = ({
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ 
             video: {
-              width: { ideal: 640 },
-              height: { ideal: 480 },
-              frameRate: { ideal: 20 }
+              width: { ideal: 426, max: 640 },
+              height: { ideal: 320, max: 480 },
+              frameRate: { ideal: 12, max: 15 }
             }, 
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
               autoGainControl: true,
-              sampleRate: 44100
+              sampleRate: 22050,
+              channelCount: 1
             }
           });
           if (localVideoRef.current) {
@@ -402,156 +463,269 @@ const VideoChat = ({
     }
   }, [isInterviewStarted, isRecording]);
 
-  const uploadChunks = async (chunks, isFinal = false) => {
-    if (chunks.length === 0) return;
+  const uploadChunks = async (chunks, isFinal = false, retryCount = 0) => {
+    if (!chunks || chunks.length === 0) {
+      console.warn('No chunks to upload');
+      return;
+    }
     
-    const blob = new Blob(chunks, {
-      type: 'video/webm'
-    });
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const chunkSizeKB = Math.round(blob.size/1024);
     
-    const formData = new FormData();
-    formData.append('recording', blob, `interview-${roomId}-${new Date().toISOString()}.webm`);
-    formData.append('userId', userId);
-    formData.append('role', role);
-    formData.append('isFinal', isFinal.toString());
-
+    console.log(`Preparing to upload ${isFinal ? 'FINAL' : 'intermediate'} recording: ${chunkSizeKB}KB`);
+    
+    if (blob.size < 1000) { // 1KB minimum
+      console.warn('Blob too small to be a valid recording, skipping upload');
+      return;
+    }
+    
     try {
-      const response = await fetch(`/api/recordings/rooms/${roomId}/upload`, {
+      setUploadStatus(isFinal ? 'Uploading final recording...' : 'Uploading...');
+      
+      const formData = new FormData();
+      formData.append('file', blob, `recording-${roomId}-${role}-${Date.now()}.webm`);
+      formData.append('roomId', roomId);
+      formData.append('userId', userId);
+      formData.append('role', role);
+      formData.append('isFinal', isFinal.toString());
+      
+      formData.append('partIndex', '0');
+      formData.append('totalParts', '1');
+      
+      const uploadResponse = await fetch('/api/cloudinary/server-upload', {
         method: 'POST',
         body: formData
       });
       
-      if (!response.ok) {
-        throw new Error('Failed to upload recording chunk');
+      if (!uploadResponse.ok) {
+        const errorData = await uploadResponse.json();
+        console.error('Server upload error:', errorData);
+        throw new Error(`Upload failed: ${errorData.error || 'Unknown error'} - ${errorData.message || ''}`);
       }
+      
+      const uploadResult = await uploadResponse.json();
+      
+      if (uploadResult.intermediate) {
+        console.log('Server acknowledged intermediate upload');
+        setUploadStatus('');
+        return;
+      }
+      
+      console.log('Upload successful:', uploadResult.url, `(${Math.round(uploadResult.bytes/1024)}KB)`);
       
       if (isFinal) {
         setUploadStatus('Upload complete');
         socketService.socket.emit('upload:status', {
           roomId,
           role,
-          status: 'complete'
+          status: 'complete',
+          videoUrl: uploadResult.url,
+          publicId: uploadResult.publicId,
+          displayName: uploadResult.displayName
         });
         fetchRecordings();
+      } else {
+        setUploadStatus('');
       }
     } catch (error) {
-      console.error('Error uploading recording chunk:', error);
+      console.error('Error uploading to server:', error);
+      
+      if (retryCount < 3) {
+        console.log(`Retrying upload (attempt ${retryCount + 1} of 3)...`);
+        setUploadStatus(`Retrying upload (${retryCount + 1}/3)...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return uploadChunks(chunks, isFinal, retryCount + 1);
+      }
+      
       if (isFinal) {
-        setUploadStatus('Upload failed');
+        setUploadStatus('Upload failed - please try again');
         socketService.socket.emit('upload:status', {
           roomId,
           role,
-          status: 'failed'
+          status: 'failed',
+          error: error.message
         });
+      } else {
+        setUploadStatus('');
       }
     }
   };
 
   const startRecording = () => {
     try {
-      const localStream = localVideoRef.current.srcObject;
-      const remoteStream = remoteVideoRef.current.srcObject;
+      recordedChunksRef.current = [];
+      
+      const localStream = localVideoRef.current?.srcObject;
+      const remoteStream = remoteVideoRef.current?.srcObject;
       
       if (!localStream || !remoteStream) {
-        console.error('Streams not ready for recording');
+        console.error('Video streams not ready for recording');
         return;
       }
 
-      const videoProcessor = (track) => {
-        const videoElem = document.createElement('video');
-        videoElem.srcObject = new MediaStream([track]);
-        videoElem.autoplay = true;
-        
-        const canvas = document.createElement('canvas');
-        canvas.width = 480;
-        canvas.height = 360;
-        const ctx = canvas.getContext('2d');
-        
-        const processor = new MediaStream();
-        const draw = () => {
-          if (videoElem.videoWidth) {
-            ctx.drawImage(videoElem, 0, 0, canvas.width, canvas.height);
-            requestAnimationFrame(draw);
-          } else {
-            setTimeout(() => requestAnimationFrame(draw), 100);
-          }
-        };
-        draw();
-        
-        const canvasStream = canvas.captureStream(15);
-        return canvasStream.getVideoTracks()[0];
-      };
+      const processedTracks = [];
+      
+      const localVideoTrack = localStream.getVideoTracks()[0];
+      const remoteVideoTrack = remoteStream.getVideoTracks()[0];
+      
+      if (localVideoTrack) {
+        try {
+          const canvas = document.createElement('canvas');
+          // reduced resolution here
 
-      const lowResVideoTracks = [];
-      try {
-        const localVideoTrack = localStream.getVideoTracks()[0];
-        const remoteVideoTrack = remoteStream.getVideoTracks()[0];
-        
-        if (localVideoTrack) {
-          lowResVideoTracks.push(videoProcessor(localVideoTrack));
+          canvas.width = 320; 
+          canvas.height = 240;
+          const ctx = canvas.getContext('2d');
+          
+          const videoElem = document.createElement('video');
+          videoElem.srcObject = new MediaStream([localVideoTrack]);
+          videoElem.autoplay = true;
+          
+          const drawVideo = () => {
+            if (videoElem.videoWidth) {
+              ctx.drawImage(videoElem, 0, 0, canvas.width, canvas.height);
+              requestAnimationFrame(drawVideo);
+            } else {
+              setTimeout(() => requestAnimationFrame(drawVideo), 100);
+            }
+          };
+          drawVideo();
+          
+          const processedTrack = canvas.captureStream(10).getVideoTracks()[0];
+          processedTracks.push(processedTrack);
+        } catch (err) {
+          console.warn('Error processing local video, using original track', err);
+          processedTracks.push(localVideoTrack);
         }
-        if (remoteVideoTrack) {
-          lowResVideoTracks.push(videoProcessor(remoteVideoTrack));
+      }
+      
+      if (remoteVideoTrack) {
+        try {
+          const canvas = document.createElement('canvas');
+          // reduced resolution here
+          canvas.width = 320;  
+          canvas.height = 240; 
+          const ctx = canvas.getContext('2d');
+          
+          const videoElem = document.createElement('video');
+          videoElem.srcObject = new MediaStream([remoteVideoTrack]);
+          videoElem.autoplay = true;
+          
+          const drawVideo = () => {
+            if (videoElem.videoWidth) {
+              ctx.drawImage(videoElem, 0, 0, canvas.width, canvas.height);
+              requestAnimationFrame(drawVideo);
+            } else {
+              setTimeout(() => requestAnimationFrame(drawVideo), 100);
+            }
+          };
+          drawVideo();
+          
+          const processedTrack = canvas.captureStream(10).getVideoTracks()[0];
+          processedTracks.push(processedTrack);
+        } catch (err) {
+          console.warn('Error processing remote video, using original track', err);
+          processedTracks.push(remoteVideoTrack);
         }
-      } catch (err) {
-        console.warn('Error processing video tracks:', err);
-        lowResVideoTracks.push(...localStream.getVideoTracks(), ...remoteStream.getVideoTracks());
       }
 
-      const audioTracks = [...localStream.getAudioTracks(), ...remoteStream.getAudioTracks()];
+      const audioTracks = [
+        ...localStream.getAudioTracks(),
+        ...remoteStream.getAudioTracks()
+      ];
       
-      const combinedStream = new MediaStream([...lowResVideoTracks, ...audioTracks]);
+      const combinedStream = new MediaStream([
+        ...processedTracks,
+        ...audioTracks
+      ]);
+      
+      console.log('Created combined stream with', processedTracks.length, 'video tracks and', audioTracks.length, 'audio tracks');
 
       const recorder = new MediaRecorder(combinedStream, {
         mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 100000,
-        audioBitsPerSecond: 96000
+        videoBitsPerSecond: 150000,  // 150kbps
+        audioBitsPerSecond: 24000    // 24kbps
+        // probably try higher bitrates later. 
       });
-
-      const uploadInterval = setInterval(() => {
-        if (recordedChunksRef.current.length > 0) {
-          const chunksToUpload = [...recordedChunksRef.current];
-          recordedChunksRef.current = [];
-          uploadChunks(chunksToUpload);
-        }
-      }, 30000);
-
+      
+      console.log('MediaRecorder created with mimeType:', recorder.mimeType);
+      
+      recordedChunksRef.current = [];
+      
+      let lastUploadTime = Date.now();
+      const UPLOAD_INTERVAL = 60000;
+      
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           recordedChunksRef.current.push(event.data);
+          
+          const totalSize = recordedChunksRef.current.reduce((size, chunk) => size + chunk.size, 0);
+          console.log(`Recorded chunk: ${Math.round(event.data.size/1024)}KB, total: ${Math.round(totalSize/1024)}KB`);
+          
+          const currentTime = Date.now();
+          if (totalSize > 5 * 1024 * 1024 && (currentTime - lastUploadTime > UPLOAD_INTERVAL)) {
+            // as for now, intermediate chunks only goes to the nextjs api endpoint
+            // the nextjs server will upload the chunks to cloudinary when interview finished
+            // for future updates, upload in chunks is needed
+            // check if there's a built in function for this from cloudinary
+            console.log('Uploading intermediate recording...');
+            
+            const chunksToUpload = [...recordedChunksRef.current];
+            
+            lastUploadTime = currentTime;
+
+            uploadChunks(chunksToUpload, false);
+          }
         }
       };
-
-      recorder.start(1000);
+      
+      recorder.start(5000);
+      console.log('Recording started');
+      
       mediaRecorderRef.current = recorder;
-      mediaRecorderRef.current.uploadInterval = uploadInterval;
       setIsRecording(true);
+      
     } catch (error) {
       console.error('Error starting recording:', error);
+      setUploadStatus('Failed to start recording');
     }
   };
 
   const stopRecording = () => {
     const recorder = mediaRecorderRef.current;
-    if (recorder && isRecording) {
-      if (recorder.uploadInterval) {
-        clearInterval(recorder.uploadInterval);
-      }
+    if (!recorder || !isRecording) {
+      console.warn('No active recorder to stop');
+      return;
+    }
+    
+    try {
+      console.log('Stopping recording...');
       
       recorder.stop();
       setIsRecording(false);
+      setUploadStatus('Preparing final recording...');
       
-      setUploadStatus('Uploading final chunk...');
       setTimeout(() => {
-        if (recordedChunksRef.current.length > 0) {
-          const finalChunks = [...recordedChunksRef.current];
-          recordedChunksRef.current = [];
-          uploadChunks(finalChunks, true);
-        } else {
-          setUploadStatus('Upload complete');
-          fetchRecordings();
+        const finalChunks = [...recordedChunksRef.current];
+        const chunkCount = finalChunks.length;
+        const totalSize = finalChunks.reduce((size, chunk) => size + chunk.size, 0);
+        
+        console.log(`Preparing final upload with ${chunkCount} chunks, total size: ${Math.round(totalSize/1024)}KB`);
+        
+        if (chunkCount === 0 || totalSize < 1000) {
+          console.error('No valid recording data collected');
+          setUploadStatus('Recording failed - no data collected');
+          return;
         }
-      }, 100);
+        
+        recordedChunksRef.current = [];
+        
+        uploadChunks(finalChunks, true);
+      }, 1000);
+      
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+      setUploadStatus('Failed to stop recording properly');
     }
   };
 
@@ -640,8 +814,8 @@ const VideoChat = ({
                 playsInline
                 preload="metadata"
                 className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
-                src={`/api/recordings/stream/${recordings.local.id}`}
-                onError={() => handleVideoError(localRecordingRef, recordings.local.id, true)}
+                src={recordings.local.url}
+                onError={() => console.error('Error loading local recording')}
               />
             </div>
             <div className="flex justify-center">
@@ -651,8 +825,8 @@ const VideoChat = ({
                   playsInline
                   preload="metadata"
                   className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
-                  src={`/api/recordings/stream/${recordings.remote.id}`}
-                  onError={() => handleVideoError(remoteRecordingRef, recordings.remote.id, false)}
+                  src={recordings.remote.url}
+                  onError={() => console.error('Error loading remote recording')}
                 />
               ) : (
                 <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">

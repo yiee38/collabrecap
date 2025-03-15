@@ -72,7 +72,6 @@ router.post('/rooms/:roomId/upload', upload.single('recording'), async (req, res
         });
       });
     } else {
-      
       const filename = `recording-${roomId}-${userId}-${timestamp}.webm`;
       const readableStream = new Readable();
       readableStream.push(req.file.buffer);
