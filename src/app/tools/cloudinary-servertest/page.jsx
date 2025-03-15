@@ -116,12 +116,6 @@ export default function CloudinaryServerTestPage() {
   
   return (
     <div className="flex flex-col items-center p-8 gap-8">
-      <h1 className="text-2xl font-bold">Cloudinary Server-Side Upload Test</h1>
-      <p className="text-blue-600">Using server-side upload (no client-side signatures)</p>
-      <p className="text-gray-500 text-sm max-w-xl text-center">
-        This demonstrates uploading through your server instead of directly to Cloudinary.
-        Your server handles all authentication with Cloudinary's API, avoiding signature issues.
-      </p>
       
       <div className="flex flex-col items-center gap-4">
         <div className="bg-black rounded-lg overflow-hidden">
