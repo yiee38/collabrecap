@@ -97,21 +97,55 @@ const QuestionEditor = ({ collaborationService }) => {
 
 
     return () => {
-      if (bindingRef.current) {
-        bindingRef.current.destroy();
-      }
-      const currentState = awareness.getLocalState();
-      awareness.setLocalState({
-        ...currentState,
-        cursors: {
-          ...currentState.cursors,
-          question: null
+      try {
+        if (bindingRef.current) {
+          bindingRef.current.destroy();
+          bindingRef.current = null;
         }
-      });
-      quillEditor.off('selection-change', cursorHandler);
-      awareness.off('change', awarenessHandler);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      cursors.clearCursors();
+        
+        // Safely clean up awareness state
+        if (awareness) {
+          try {
+            const currentState = awareness.getLocalState();
+            if (currentState) {
+              awareness.setLocalState({
+                ...currentState,
+                cursors: null
+              });
+            }
+          } catch (err) {
+            console.error('Error cleaning up QuestionEditor awareness state:', err);
+          }
+          
+          try {
+            awareness.off('change', awarenessHandler);
+          } catch (err) {
+            console.error('Error removing awareness handler:', err);
+          }
+        }
+        
+        // Clean up event listeners
+        try {
+          if (quillEditor) {
+            quillEditor.off('selection-change', cursorHandler);
+          }
+        } catch (err) {
+          console.error('Error removing selection-change handler:', err);
+        }
+        
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        
+        // Clear cursors
+        try {
+          if (cursors) {
+            cursors.clearCursors();
+          }
+        } catch (err) {
+          console.error('Error clearing cursors:', err);
+        }
+      } catch (err) {
+        console.error('Error during QuestionEditor cleanup:', err);
+      }
     };
   }, [collaborationService]);
 

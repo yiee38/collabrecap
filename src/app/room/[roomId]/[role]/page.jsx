@@ -268,36 +268,69 @@ const InterviewRoom = () => {
       setupRoom();
 
       return () => {
-        if (playIntervalRef.current) {
-          clearInterval(playIntervalRef.current);
-          playIntervalRef.current = null;
-        }
-        if (collaborationRef.current) {
-          collaborationRef.current.destroy();
-          collaborationRef.current = null;
-        }
-        socketService.disconnect();
+        const cleanup = async () => {
+          if (playIntervalRef.current) {
+            clearInterval(playIntervalRef.current);
+            playIntervalRef.current = null;
+          }
+          
+          // Safely clean up awareness state before destroying collaboration service
+          if (collaborationRef.current?.awareness) {
+            try {
+              const currentState = collaborationRef.current.awareness.getLocalState();
+              if (currentState) {
+                // Clear cursor state to prevent "Cannot read properties of null (reading 'cursors')" errors
+                collaborationRef.current.awareness.setLocalState({
+                  ...currentState,
+                  cursors: null,
+                  mousePointer: null
+                });
+              }
+            } catch (err) {
+              console.error('Error cleaning up awareness state:', err);
+            }
+          }
+          
+          // Safely destroy collaboration service
+          if (collaborationRef.current) {
+            try {
+              collaborationRef.current.destroy();
+            } catch (err) {
+              console.error('Error destroying collaboration service:', err);
+            }
+            collaborationRef.current = null;
+          }
+          
+          // Safely disconnect socket
+          try {
+            socketService.disconnect();
+          } catch (err) {
+            console.error('Error disconnecting socket:', err);
+          }
+          
+          setRoomState('CREATED');
+          setRemotePointers({});
+          setParticipants({
+            interviewer: { present: false, videoReady: false },
+            interviewee: { present: false, videoReady: false }
+          });
+          setOperations([]);
+          setCurrentTime(0);
+          setDuration(0);
+          setIsPlaying(false);
+          setTimelineController(null);
+          setUploadStatus('pending');
+          setUploadStatuses({
+            interviewer: false,
+            interviewee: false
+          });
+          setArchivedNotes('');
+          setArchivedNoteLines([]);
+          setArchivedQuestionContent('');
+          setIsCollaborationReady(false);
+        };
         
-        setRoomState('CREATED');
-        setRemotePointers({});
-        setParticipants({
-          interviewer: { present: false, videoReady: false },
-          interviewee: { present: false, videoReady: false }
-        });
-        setOperations([]);
-        setCurrentTime(0);
-        setDuration(0);
-        setIsPlaying(false);
-        setTimelineController(null);
-        setUploadStatus('pending');
-        setUploadStatuses({
-          interviewer: false,
-          interviewee: false
-        });
-        setArchivedNotes('');
-        setArchivedNoteLines([]);
-        setArchivedQuestionContent('');
-        setIsCollaborationReady(false);
+        cleanup();
       };
     }
   }, [status, roomId, session?.user?.email, role]);

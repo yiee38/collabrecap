@@ -718,40 +718,89 @@ const VideoChat = ({
 
     return () => {
       const cleanup = async () => {
-        if (localVideoRef.current?.srcObject) {
-          localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
-          localVideoRef.current.srcObject = null;
-        }
-        if (remoteVideoRef.current?.srcObject) {
-          remoteVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
-          remoteVideoRef.current.srcObject = null;
-        }
-        
-        if (peer) {
-          if (peer.pingInterval) {
-            clearInterval(peer.pingInterval);
+        try {
+          // Stop all media tracks
+          if (localVideoRef.current?.srcObject) {
+            try {
+              localVideoRef.current.srcObject.getTracks().forEach(track => {
+                try {
+                  track.stop();
+                } catch (e) {
+                  console.error('Error stopping local track:', e);
+                }
+              });
+              localVideoRef.current.srcObject = null;
+            } catch (e) {
+              console.error('Error cleaning up local video:', e);
+            }
           }
           
-          if (peer.remotePeerHandler) {
-            socketService.socket?.off('room:peer_info', peer.remotePeerHandler);
+          if (remoteVideoRef.current?.srcObject) {
+            try {
+              remoteVideoRef.current.srcObject.getTracks().forEach(track => {
+                try {
+                  track.stop();
+                } catch (e) {
+                  console.error('Error stopping remote track:', e);
+                }
+              });
+              remoteVideoRef.current.srcObject = null;
+            } catch (e) {
+              console.error('Error cleaning up remote video:', e);
+            }
           }
           
-          try {
-            peer.destroy();
-          } catch (e) {
-            console.error('Error destroying peer in cleanup:', e);
+          // Cancel any animation frames
+          if (animationFrameRef.current) {
+            cancelAnimationFrame(animationFrameRef.current);
+            animationFrameRef.current = null;
           }
+          
+          // Clean up audio context
+          if (audioContextRef.current) {
+            try {
+              audioContextRef.current.close();
+              audioContextRef.current = null;
+            } catch (e) {
+              console.error('Error closing audio context:', e);
+            }
+          }
+          
+          // Clean up peer connection
+          if (peer) {
+            if (peer.pingInterval) {
+              clearInterval(peer.pingInterval);
+            }
+            
+            if (peer.remotePeerHandler && socketService.socket) {
+              try {
+                socketService.socket.off('room:peer_info', peer.remotePeerHandler);
+              } catch (e) {
+                console.error('Error removing socket listener:', e);
+              }
+            }
+            
+            try {
+              peer.destroy();
+            } catch (e) {
+              console.error('Error destroying peer in cleanup:', e);
+            }
+          }
+          
+          // Clear intervals
+          if (connectionMonitorRef.current) {
+            clearInterval(connectionMonitorRef.current);
+            connectionMonitorRef.current = null;
+          }
+          
+          // Reset state
+          setIsLocalStreamReady(false);
+          setRemoteStream(null);
+          onVideoReady(false);
+          setConnectionStatus('disconnected');
+        } catch (error) {
+          console.error('Error during VideoChat cleanup:', error);
         }
-        
-        if (connectionMonitorRef.current) {
-          clearInterval(connectionMonitorRef.current);
-          connectionMonitorRef.current = null;
-        }
-        
-        setIsLocalStreamReady(false);
-        setRemoteStream(null);
-        onVideoReady(false);
-        setConnectionStatus('disconnected');
       };
       
       cleanup();

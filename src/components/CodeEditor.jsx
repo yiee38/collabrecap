@@ -176,15 +176,39 @@ const CodeEditor = ({
   }, [currentTimeOverride]);
 
   useEffect(() => {
-    if (!roomId || !userId || !role) return;
-
-    if (!collaborationRef.current) {
+    if (!collaborationRef.current && roomId && userId) {
       collaborationRef.current = new CollaborationService(roomId, userId, role);
+      
+      collaborationRef.current.onTextUpdate((text) => {
+        if (isPlaying) {
+          setContent(text);
+        }
+      });
     }
-
+    
     return () => {
-      collaborationRef.current?.destroy();
-      collaborationRef.current = null;
+      try {
+        if (scrollerRef.current) {
+          try {
+            const scrollHandler = () => {};
+            scrollerRef.current.removeEventListener('scroll', scrollHandler);
+            scrollerRef.current = null;
+          } catch (err) {
+            console.error('Error removing scroll event listener:', err);
+          }
+        }
+        
+        if (collaborationRef.current) {
+          try {
+            collaborationRef.current.destroy();
+            collaborationRef.current = null;
+          } catch (err) {
+            console.error('Error destroying CodeEditor collaboration service:', err);
+          }
+        }
+      } catch (err) {
+        console.error('Error during CodeEditor cleanup:', err);
+      }
     };
   }, [roomId, userId, role]);
 
