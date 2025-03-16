@@ -85,7 +85,24 @@ const InterviewRoom = () => {
 
           socketService.onError((error) => {
             console.log('Socket error:', error);
-            setError('Room not found');
+            
+            if (error.type === 'JOIN_ERROR') {
+              if (error.message.includes('role is taken')) {
+                setError(`This role is already taken. Please use a different link or contact the room creator.`);
+              } else if (error.message.includes('Already joined in another role')) {
+                setError(`You are already in this room with a different role. You cannot join with multiple roles.`);
+              } else {
+                setError(`Cannot join room: ${error.message}`);
+              }
+            } else if (error.type === 'ROOM_ERROR') {
+              if (error.message.includes('Room not found')) {
+                setError('This room does not exist. Please check the URL or contact the room creator.');
+              } else {
+                setError(`Room error: ${error.message}`);
+              }
+            } else {
+              setError(error.message || 'An unknown error occurred');
+            }
           });
 
           socketService.joinRoom(roomId, session.user.email, role);
@@ -745,13 +762,24 @@ const InterviewRoom = () => {
     return <div>Loading...</div>;
   }
 
+  if (status === "unauthenticated") {
+    return <div>Redirecting to login...</div>;
+  }
+
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-screen">
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
           <strong className="font-bold">Error: </strong>
           <span className="block sm:inline">{error}</span>
         </div>
+        <Button 
+          onClick={() => router.push('/dashboard')}
+          variant="default"
+          className="mt-4"
+        >
+          Return to Dashboard
+        </Button>
       </div>
     );
   }
@@ -853,7 +881,7 @@ const InterviewRoom = () => {
           )}
         </div>
         {roomState === 'CREATED' && role === 'interviewer' && (
-          <div className='flex flex-row gap-4'>
+          <div className='flex flex-row gap-4 justify-start w-full'>
             <Button 
               onClick={startInterview}
               disabled={!bothParticipantsPresent || !bothVideosReady}
