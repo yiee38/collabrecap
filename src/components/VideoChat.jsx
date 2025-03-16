@@ -288,10 +288,10 @@ const VideoChat = ({
     };
   }, [localVideoRef.current?.srcObject, remoteVideoRef.current?.srcObject]);
 
-  const fetchRecordings = async () => {
+  const fetchRecordings = async (retryCount = 0) => {
     try {
-      setUploadStatus('loading_videos');
-      console.log(`Fetching recordings for room: ${roomId}`);
+      setUploadStatus(retryCount > 0 ? 'processing_recordings' : 'loading_videos');
+      console.log(`Fetching recordings for room: ${roomId} (attempt: ${retryCount + 1})`);
       
       const res = await fetch(`/api/cloudinary/recordings?roomId=${roomId}`);
       
@@ -320,14 +320,18 @@ const VideoChat = ({
             uploadStatus === 'uploading_final' || 
             uploadStatus === 'preparing_final' ||
             uploadStatus === 'upload_complete' ||
+            uploadStatus === 'processing_recordings' ||
             uploadStatus.startsWith('retrying_upload_')
           )) {
           console.log('Recordings not yet available, still processing...');
           setUploadStatus('processing_recordings');
           
+          const retryDelay = Math.min(3000 + (retryCount * 2000), 15000);
+          console.log(`Will retry in ${retryDelay/1000} seconds (attempt ${retryCount + 1})`);
+          
           setTimeout(() => {
-            fetchRecordings();
-          }, 3000);
+            fetchRecordings(retryCount + 1);
+          }, retryDelay);
           return;
         }
         
@@ -373,18 +377,32 @@ const VideoChat = ({
             uploadStatus === 'uploading_final' || 
             uploadStatus === 'preparing_final' ||
             uploadStatus === 'upload_complete' ||
+            uploadStatus === 'processing_recordings' ||
             uploadStatus.startsWith('retrying_upload_')
           )) {
           console.log('Recordings not yet available, still processing...');
           setUploadStatus('processing_recordings');
           
+          const retryDelay = Math.min(3000 + (retryCount * 2000), 15000);
+          console.log(`Will retry in ${retryDelay/1000} seconds (attempt ${retryCount + 1})`);
+          
           setTimeout(() => {
-            fetchRecordings();
-          }, 3000);
+            fetchRecordings(retryCount + 1);
+          }, retryDelay);
           return;
         }
         
-        setUploadStatus('failed_to_load: No recordings found');
+        if (retryCount >= 5) {
+          setUploadStatus('failed_to_load: No recordings found');
+        } else {
+          console.log('No recordings found yet, but not showing error as we may still be processing');
+          setUploadStatus('processing_recordings');
+          
+          const retryDelay = Math.min(3000 + (retryCount * 2000), 15000);
+          setTimeout(() => {
+            fetchRecordings(retryCount + 1);
+          }, retryDelay);
+        }
         return;
       }
       
@@ -418,6 +436,7 @@ const VideoChat = ({
           uploadStatus === 'uploading_final' || 
           uploadStatus === 'preparing_final' ||
           uploadStatus === 'upload_complete' ||
+          uploadStatus === 'processing_recordings' ||
           uploadStatus.startsWith('retrying_upload_')
         )) {
         console.log('Error fetching recordings during processing, will retry...');
@@ -719,7 +738,6 @@ const VideoChat = ({
     return () => {
       const cleanup = async () => {
         try {
-          // Stop all media tracks
           if (localVideoRef.current?.srcObject) {
             try {
               localVideoRef.current.srcObject.getTracks().forEach(track => {
@@ -750,13 +768,11 @@ const VideoChat = ({
             }
           }
           
-          // Cancel any animation frames
           if (animationFrameRef.current) {
             cancelAnimationFrame(animationFrameRef.current);
             animationFrameRef.current = null;
           }
           
-          // Clean up audio context
           if (audioContextRef.current) {
             try {
               audioContextRef.current.close();
@@ -766,7 +782,6 @@ const VideoChat = ({
             }
           }
           
-          // Clean up peer connection
           if (peer) {
             if (peer.pingInterval) {
               clearInterval(peer.pingInterval);
@@ -787,13 +802,11 @@ const VideoChat = ({
             }
           }
           
-          // Clear intervals
           if (connectionMonitorRef.current) {
             clearInterval(connectionMonitorRef.current);
             connectionMonitorRef.current = null;
           }
           
-          // Reset state
           setIsLocalStreamReady(false);
           setRemoteStream(null);
           onVideoReady(false);
@@ -891,7 +904,17 @@ const VideoChat = ({
           publicId: uploadResult.publicId,
           displayName: uploadResult.displayName
         });
-        fetchRecordings();
+        
+        // For larger videos, add more delay before fetching recordings
+        const fileSize = Math.round(uploadResult.bytes/1024/1024); 
+        const delayTime = Math.min(Math.max(fileSize * 200, 2000), 10000); // 200ms per mb
+        
+        console.log(`Large video detected (${fileSize}MB). Waiting ${delayTime}ms before fetching recordings...`);
+        setUploadStatus('processing_recordings');
+        
+        setTimeout(() => {
+          fetchRecordings();
+        }, delayTime);
       } else {
         setUploadStatus('');
       }
@@ -1120,13 +1143,13 @@ const VideoChat = ({
         setUploadStatus('processing_recordings');
         
         const timer = setTimeout(() => {
-          fetchRecordings();
-        }, 2000);
+          fetchRecordings(0); // Start with retry count 0
+        }, 5000); 
         
         return () => clearTimeout(timer);
       }
     }
-  }, [isInterviewStarted, uploadStatus, recordings, fetchRecordings]);
+  }, [isInterviewStarted, uploadStatus, recordings]);
 
   const getStatusMessage = (status) => {
     if (!status || status === '') return 'Ready to play';
@@ -1149,14 +1172,14 @@ const VideoChat = ({
       if (status.includes('corrupted')) {
         return 'Error: Recordings are corrupted';
       } else if (status.includes('No recordings')) {
-        return 'Error: No recordings found';
+        return 'Error: No recordings found. Please try refreshing the page.';
       } else {
-        return 'Error loading recordings';
+        return 'Error loading recordings. Please try refreshing the page.';
       }
     }
     
-    if (status === 'upload_failed') return 'Upload failed';
-    if (status === 'recording_failed') return 'Recording failed';
+    if (status === 'upload_failed') return 'Upload failed. Please try again.';
+    if (status === 'recording_failed') return 'Recording failed. Please try again.';
     
     return status;
   };
@@ -1248,69 +1271,7 @@ const VideoChat = ({
             </button>
           </div>
         )}
-  {/*Back up of video plays */}
-        {false && !isInterviewStarted && recordings.local && (
-          <div className="flex gap-5 ml-auto">
-            {/* LOcal videos */}
-            <div className="flex justify-center">
-              {videoReady.local ? (
-                <video
-                  ref={localRecordingRef}
-                  playsInline
-                  preload="metadata"
-                  className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
-                  src={recordings.local.url}
-                  onError={() => console.error('Error loading local recording')}
-                />) 
-                :(
-                  <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
-                    <div className="flex flex-col items-center">
-                      <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                      <span className="text-xs text-gray-500">Loading video...</span>
-                    </div>
-                  </div>
-                )
-              }
-              {/* Hidden video for preloading */}
-              {!videoReady.local && (
-                <video
-                  style={{ display: 'none' }}
-                  preload="metadata"
-                  src={recordings.local.url}
-                  onLoadedData={() => setVideoReady(prev => ({ ...prev, local: true }))}
-                  onError={(e) => {
-                    console.log("Error preloading local video, will retry");
-                    // Retry loading with a delay and cache-busting
-                    setTimeout(() => {
-                      const video = e.target;
-                      const timestamp = Date.now();
-                      const originalSrc = video.src.split('?')[0];
-                      video.src = `${originalSrc}?t=${timestamp}`;
-                    }, 2000);
-                  }}
-                />
-              )}
-             
-            </div>
-            {/* Remote videos */}
-            <div className="flex justify-center">
-              {recordings.remote ? (
-                <video
-                  ref={remoteRecordingRef}
-                  playsInline
-                  preload="metadata"
-                  className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
-                  src={recordings.remote.url}
-                  onError={() => console.error('Error loading remote recording')}
-                />
-              ) : (
-                <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
-                  <span className="text-sm text-gray-500">No Recording</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+
 
         {!isInterviewStarted && (recordings.local || recordings.remote) && (
           <div className="flex gap-5 ml-auto">
