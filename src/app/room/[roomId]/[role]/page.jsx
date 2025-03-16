@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { debounce } from 'lodash';
 import { useParams, useRouter } from 'next/navigation';
 import { socketService } from '@/lib/socketService';
@@ -705,6 +705,37 @@ const InterviewRoom = () => {
     }
   };
 
+  const onUploadStatusChange = useCallback((status) => {
+    console.log(`Upload status changed: ${status}`);
+    
+    if (status === 'loading_videos' || status === 'Loading recordings...') {
+      setUploadStatus('loading_videos');
+      return;
+    }
+    
+    if (status === 'pending' || 
+        status === 'uploading' || 
+        status === 'uploading_final' || 
+        status === 'preparing_final' ||
+        status === 'processing_recordings' ||
+        status.startsWith('retrying_upload_')) {
+      setUploadStatus(status);
+      return;
+    }
+    
+    if (!status || status === '' || status === 'complete' || status === 'upload_complete') {
+      setUploadStatus('complete');
+      return;
+    }
+    
+    if (status.includes('failed') || status.includes('corrupted')) {
+      setUploadStatus(status);
+      return;
+    }
+    
+    setUploadStatus(status);
+  }, []);
+
   if (status === "loading") {
     return <div>Loading...</div>;
   }
@@ -755,6 +786,7 @@ const InterviewRoom = () => {
           currentTime={currentTime}
           isPlaying={isPlaying}
           duration={duration}
+          onUploadStatusChange={onUploadStatusChange}
           onVideoReady={(ready) => {
             setParticipants(prev => ({
               ...prev,

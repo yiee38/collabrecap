@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState, useEffect } from 'react';
+import React, { useCallback, useRef, useState, useEffect, useMemo } from 'react';
 import { FaPlay, FaPause, FaArrowRotateLeft } from "react-icons/fa6";
 import { Button } from 'react-bootstrap';
 import { debounce } from 'lodash';
@@ -28,6 +28,10 @@ const customStyle = {
   controls: {
     display: 'flex',
     gap: '8px',
+  },
+  disabledButton: {
+    opacity: '0.5',
+    cursor: 'not-allowed',
   }
 };
 
@@ -53,6 +57,59 @@ const Timeline = ({
   const MIN_SEEK_INTERVAL = 50;
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekingUser, setSeekingUser] = useState(null);
+
+  const isControlDisabled = useMemo(() => {
+    console.log('Checking isControlDisabled:');
+    console.log('- isInterviewActive:', isInterviewActive);
+    console.log('- uploadStatus:', uploadStatus);
+    console.log('- isSeeking:', isSeeking);
+    console.log('- seekingUser:', seekingUser);
+    
+    if (isSeeking && seekingUser !== userId) {
+      console.log('Controls disabled: Another user is seeking');
+      return true;
+    }
+    
+    if (isInterviewActive) {
+      const isUploading = uploadStatus && (
+        uploadStatus === 'uploading' || 
+        uploadStatus === 'uploading_final' || 
+        uploadStatus === 'preparing_final' ||
+        uploadStatus.startsWith('retrying_upload_')
+      );
+      
+      console.log('Interview active, uploading:', isUploading);
+      return isUploading;
+    }
+
+    const isLoading = uploadStatus === 'loading_videos' || 
+                      uploadStatus === 'Loading recordings...' || 
+                      uploadStatus === 'pending' ||
+                      uploadStatus === 'processing_recordings';
+    
+    const isUploading = uploadStatus === 'uploading' || 
+                        uploadStatus === 'uploading_final' || 
+                        uploadStatus === 'preparing_final' ||
+                        uploadStatus.startsWith('retrying_upload_');
+    
+    const isFailure = uploadStatus && (
+      uploadStatus.includes('failed') || 
+      uploadStatus.includes('corrupted')
+    );
+    
+    const isComplete = !uploadStatus || 
+                       uploadStatus === '' || 
+                       uploadStatus === 'complete';
+    
+    console.log('Status checks:', {
+      isLoading,
+      isUploading,
+      isFailure,
+      isComplete
+    });
+    
+    return isLoading || isUploading || isFailure;
+  }, [isInterviewActive, uploadStatus, isSeeking, seekingUser, userId]);
 
   const formatTime = (ms) => {
     const minutes = Math.floor(ms / 60000);
@@ -106,9 +163,36 @@ const Timeline = ({
     }
   }, [timelineController]);
 
-  const isControlDisabled = (isSeeking && seekingUser && seekingUser !== userId) || 
-    (isInterviewActive && uploadStatus !== 'complete');
-
+  useEffect(() => {
+    console.log('Timeline Debug:');
+    console.log('- isInterviewActive:', isInterviewActive);
+    console.log('- uploadStatus:', uploadStatus);
+    console.log('- isControlDisabled:', isControlDisabled);
+    console.log('- isSeeking:', isSeeking);
+    console.log('- seekingUser:', seekingUser);
+    console.log('- Condition 1:', (isSeeking && seekingUser && seekingUser !== userId));
+    console.log('- Condition 2:', (isInterviewActive && uploadStatus !== 'complete'));
+    console.log('- Condition 3:', (!isInterviewActive && (
+      uploadStatus === 'loading_videos' ||
+      uploadStatus === 'Loading recordings...' || 
+      uploadStatus === 'pending' ||
+      uploadStatus === 'uploading' ||
+      uploadStatus === 'uploading_final' ||
+      uploadStatus === 'preparing_final' ||
+      uploadStatus.startsWith('retrying_upload_')
+    )));
+    
+    if (!isInterviewActive) {
+      console.log('- Is loading_videos?', uploadStatus === 'loading_videos');
+      console.log('- Is Loading recordings...?', uploadStatus === 'Loading recordings...');
+      console.log('- Is pending?', uploadStatus === 'pending');
+      console.log('- Is uploading?', uploadStatus === 'uploading');
+      console.log('- Is uploading_final?', uploadStatus === 'uploading_final');
+      console.log('- Is preparing_final?', uploadStatus === 'preparing_final');
+      console.log('- Starts with retrying_upload_?', uploadStatus?.startsWith('retrying_upload_'));
+    }
+  }, [isInterviewActive, uploadStatus, isControlDisabled, isSeeking, seekingUser, userId]);
+  
   const getStatusMessage = () => {
     if (isSeeking && seekingUser && seekingUser !== userId) {
       return `Timeline is being controlled by ${role === 'interviewer' ? 'interviewee' : 'interviewer'}`;
@@ -124,6 +208,41 @@ const Timeline = ({
       if (!uploadStatuses?.interviewee) missing.push('interviewee');
       return `Missing recordings from: ${missing.join(', ')}`;
     }
+    
+    if (!isInterviewActive && uploadStatus === 'uploading') {
+      return 'Processing recordings...';
+    }
+    
+    if (!isInterviewActive && uploadStatus === 'uploading_final') {
+      return 'Uploading final recording...';
+    }
+    
+    if (!isInterviewActive && uploadStatus === 'preparing_final') {
+      return 'Preparing final recording...';
+    }
+    
+    if (!isInterviewActive && uploadStatus === 'processing_recordings') {
+      return 'Processing recordings... Please wait';
+    }
+    
+    if (!isInterviewActive && uploadStatus.startsWith('retrying_upload_')) {
+      const attempt = uploadStatus.replace('retrying_upload_', '');
+      return `Retrying upload (${attempt}/3)...`;
+    }
+    
+    if (!isInterviewActive && (uploadStatus === 'pending' || uploadStatus === 'loading_videos')) {
+      return 'Loading video recordings...';
+    }
+
+    if (!isInterviewActive && uploadStatus && (
+      uploadStatus.startsWith('failed_to_load') || 
+      uploadStatus.includes('failed')
+    )) {
+      if (uploadStatus.startsWith('failed_to_load:')) {
+        return `Failed to load recordings: ${uploadStatus.replace('failed_to_load:', '').trim()}`;
+      }
+      return uploadStatus;
+    }
 
     return null;
   };
@@ -135,6 +254,7 @@ const Timeline = ({
           onClick={onTogglePlay} 
           disabled={isControlDisabled}
           title={getStatusMessage()}
+          style={isControlDisabled ? customStyle.disabledButton : {}}
         >
           {isPlaying ? <FaPause /> : <FaPlay />}
         </Button>
@@ -142,6 +262,7 @@ const Timeline = ({
           onClick={onReset} 
           disabled={isControlDisabled}
           title={getStatusMessage()}
+          style={isControlDisabled ? customStyle.disabledButton : {}}
         >
           <FaArrowRotateLeft />
         </Button>

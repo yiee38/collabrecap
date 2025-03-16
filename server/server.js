@@ -407,6 +407,41 @@ async function initMongoDB() {
         });
       });
 
+      socket.on('room:peer_present', ({ roomId, peerId, role, userId }) => {
+        if (!roomId || !peerId) return;
+        
+        console.log(`User ${userId} registered as ${role} with peer ID ${peerId} in room ${roomId}`);
+        socket.data.peerId = peerId;
+        
+        socket.to(roomId).emit('room:peer_info', { 
+          peerId,
+          userId,
+          role
+        });
+      });
+      
+      socket.on('room:get_peers', ({ roomId }) => {
+        if (!roomId) return;
+        
+        console.log(`User ${socket.data.userId} requested peers in room ${roomId}`);
+        
+        const socketsInRoom = io.sockets.adapter.rooms.get(roomId);
+        if (!socketsInRoom) return;
+        
+        for (const socketId of socketsInRoom) {
+          if (socketId !== socket.id) {
+            const peerSocket = io.sockets.sockets.get(socketId);
+            if (peerSocket && peerSocket.data.peerId) {
+              socket.emit('room:peer_info', {
+                peerId: peerSocket.data.peerId,
+                userId: peerSocket.data.userId,
+                role: peerSocket.data.role
+              });
+            }
+          }
+        }
+      });
+
       socket.on('error', (error) => {
         console.log(error)
       })

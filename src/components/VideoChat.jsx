@@ -12,7 +12,8 @@ const VideoChat = ({
   isInterviewStarted,
   currentTime,
   isPlaying,
-  duration 
+  duration,
+  onUploadStatusChange 
 }) => {
   const [peer, setPeer] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
@@ -24,6 +25,7 @@ const VideoChat = ({
   const [isAutoMuteEnabled, setIsAutoMuteEnabled] = useState(true);
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
   const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('initializing');
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const localRecordingRef = useRef(null);
@@ -33,6 +35,27 @@ const VideoChat = ({
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const connectionMonitorRef = useRef(null);
+  const lastConnectionCheckRef = useRef(Date.now());
+
+  useEffect(() => {
+    console.log('VideoChat component mounted, cleaning up any existing connections');
+    
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+      navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+        .then(stream => {
+          stream.getTracks().forEach(track => track.stop());
+          console.log('Stopped all newly requested tracks');
+        })
+        .catch(err => {
+          console.log('Could not get dummy stream for cleanup:', err.name);
+        });
+    }
+    
+    return () => {
+      console.log('VideoChat component unmounting, cleaning up connections');
+    };
+  }, []);
 
   useEffect(() => {
     if (!isInterviewStarted && (localRecordingRef.current || remoteRecordingRef.current)) {
@@ -100,6 +123,88 @@ const VideoChat = ({
     }
   }, [isInterviewStarted]);
 
+  useEffect(() => {
+    if (!isInterviewStarted) {
+      const monitorConnection = () => {
+        const now = Date.now();
+        const timeSinceLastCheck = now - lastConnectionCheckRef.current;
+        
+        if (timeSinceLastCheck > 20000) {
+          lastConnectionCheckRef.current = now;
+          
+          const localStreamActive = localVideoRef.current?.srcObject && 
+                                   localVideoRef.current.srcObject.active;
+          
+          const localVideoActive = localStreamActive && 
+                                   localVideoRef.current.srcObject.getVideoTracks().some(track => track.readyState === 'live');
+          
+          const peerConnected = peer && peer.open && !peer.destroyed;
+          
+          console.log('Checking connection health:', { 
+            localStreamActive, 
+            localVideoActive, 
+            peerConnected,
+            connectionStatus: connectionStatus
+          });
+          
+          if (!localStreamActive || !localVideoActive || !peerConnected) {
+            console.log('⚠️ Connection check failed', { 
+              localStreamActive, 
+              localVideoActive, 
+              peerConnected 
+            });
+            setConnectionStatus('reconnecting');
+            
+            if (peer) {
+              console.log('Destroying peer connection for reconnection');
+              try {
+                peer.destroy();
+              } catch (e) {
+                console.error('Error destroying peer:', e);
+              }
+            }
+            
+            onVideoReady(false);
+            
+            setTimeout(() => {
+              console.log('Attempting reconnection...');
+              initPeer(0);
+            }, 1000);
+          } else {
+            if (connectionStatus !== 'connected') {
+              console.log('Connection is healthy, setting status to connected');
+              setConnectionStatus('connected');
+            }
+            onVideoReady(true);
+            
+            if (socketService.socket?.connected) {
+              socketService.socket.emit('video:ready', { 
+                roomId,
+                role,
+                ready: true 
+              });
+            }
+          }
+        }
+      };
+      
+      console.log('Setting up connection monitoring');
+      connectionMonitorRef.current = setInterval(monitorConnection, 5000);
+      
+      return () => {
+        if (connectionMonitorRef.current) {
+          console.log('Clearing connection monitoring');
+          clearInterval(connectionMonitorRef.current);
+          connectionMonitorRef.current = null;
+        }
+      };
+    } else if (connectionMonitorRef.current) {
+      console.log('Interview started, clearing connection monitoring');
+      clearInterval(connectionMonitorRef.current);
+      connectionMonitorRef.current = null;
+    }
+  }, [isInterviewStarted, peer, roomId, role, connectionStatus]);
+
   const setupAudioAnalysis = (stream, isLocal = true) => {
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
     const analyser = audioContext.createAnalyser();
@@ -165,7 +270,7 @@ const VideoChat = ({
 
   const fetchRecordings = async () => {
     try {
-      setUploadStatus('Loading recordings...');
+      setUploadStatus('loading_videos');
       console.log(`Fetching recordings for room: ${roomId}`);
       
       const res = await fetch(`/api/cloudinary/recordings?roomId=${roomId}`);
@@ -190,7 +295,23 @@ const VideoChat = ({
           details: errorData.details
         });
         
-        setUploadStatus(`Failed to load recordings: ${errorData.error || res.statusText}`);
+        if (res.status === 404 && uploadStatus && (
+            uploadStatus === 'uploading' || 
+            uploadStatus === 'uploading_final' || 
+            uploadStatus === 'preparing_final' ||
+            uploadStatus === 'upload_complete' ||
+            uploadStatus.startsWith('retrying_upload_')
+          )) {
+          console.log('Recordings not yet available, still processing...');
+          setUploadStatus('processing_recordings');
+          
+          setTimeout(() => {
+            fetchRecordings();
+          }, 3000);
+          return;
+        }
+        
+        setUploadStatus(`failed_to_load: ${errorData.error || res.statusText}`);
         return;
       }
       
@@ -199,13 +320,13 @@ const VideoChat = ({
         data = await res.json();
       } catch (parseError) {
         console.error('Error parsing recordings response:', parseError);
-        setUploadStatus('Invalid response format');
+        setUploadStatus('failed_to_load: Invalid response format');
         return;
       }
       
       if (!data.recordings || !Array.isArray(data.recordings)) {
         console.error('Unexpected response format:', data);
-        setUploadStatus('Invalid recordings data');
+        setUploadStatus('failed_to_load: Invalid recordings data');
         return;
       }
       
@@ -224,6 +345,45 @@ const VideoChat = ({
         `Found (${remoteRec.filename}, ${Math.round(remoteRec.size/1024)}KB)` : 
         'Not found');
       
+      if (!localRec && !remoteRec) {
+        console.error('No recordings found for this room');
+        
+        if (uploadStatus && (
+            uploadStatus === 'uploading' || 
+            uploadStatus === 'uploading_final' || 
+            uploadStatus === 'preparing_final' ||
+            uploadStatus === 'upload_complete' ||
+            uploadStatus.startsWith('retrying_upload_')
+          )) {
+          console.log('Recordings not yet available, still processing...');
+          setUploadStatus('processing_recordings');
+          
+          setTimeout(() => {
+            fetchRecordings();
+          }, 3000);
+          return;
+        }
+        
+        setUploadStatus('failed_to_load: No recordings found');
+        return;
+      }
+      
+      if (localRec && localRec.size < 1000) {
+        console.error('Local recording appears to be corrupted (too small)');
+        localRec.corrupted = true;
+      }
+      
+      if (remoteRec && remoteRec.size < 1000) {
+        console.error('Remote recording appears to be corrupted (too small)');
+        remoteRec.corrupted = true;
+      }
+      
+      if ((localRec?.corrupted || !localRec) && (remoteRec?.corrupted || !remoteRec)) {
+        console.error('All available recordings are corrupted');
+        setUploadStatus('failed_to_load: All recordings are corrupted or missing');
+        return;
+      }
+      
       setRecordings({ 
         local: localRec || null, 
         remote: remoteRec || null 
@@ -232,17 +392,40 @@ const VideoChat = ({
       setUploadStatus('');
     } catch (err) {
       console.error('Error fetching recordings:', err);
-      setUploadStatus('Error loading recordings');
+      
+      if (uploadStatus && (
+          uploadStatus === 'uploading' || 
+          uploadStatus === 'uploading_final' || 
+          uploadStatus === 'preparing_final' ||
+          uploadStatus === 'upload_complete' ||
+          uploadStatus.startsWith('retrying_upload_')
+        )) {
+        console.log('Error fetching recordings during processing, will retry...');
+        setUploadStatus('processing_recordings');
+        
+        setTimeout(() => {
+          fetchRecordings();
+        }, 3000);
+        return;
+      }
+      
+      setUploadStatus('failed_to_load: Error loading recordings');
     }
   };
 
   useEffect(() => {
     if (!isInterviewStarted) {
-      fetchRecordings();
+      if (duration > 0) {
+        if (!recordings.local && !recordings.remote) {
+          setUploadStatus('loading_videos');
+        }
+        fetchRecordings();
+      }
     } else {
       setRecordings({ local: null, remote: null });
+      setUploadStatus('');
     }
-  }, [roomId, isInterviewStarted]);
+  }, [roomId, isInterviewStarted, duration]);
 
   useEffect(() => {
     if (!isInterviewStarted && (recordings.local || recordings.remote)) {
@@ -295,124 +478,220 @@ const VideoChat = ({
     const initPeer = async (retryCount = 0) => {
       try {
         if (peer) {
-          peer.destroy();
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          try {
+            console.log('Cleaning up existing peer connection');
+            peer.destroy();
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (err) {
+            console.error('Error destroying peer:', err);
+          }
         }
 
-        const peerConfig = process.env.NODE_ENV === 'production' ? {
-        host: window.location.hostname,
-        path: '/peerService/peer',
-        secure: window.location.protocol === 'https:'
-      } : {
-        host: 'localhost',
-        port: 9000,
-        path: '/peer'
-      };
-      
-      const newPeer = new Peer(`${roomId}-${role}`, peerConfig);
-
-      newPeer.on('open', async (id) => {
-        console.log('Connected to peer server with ID:', id);
+        const uniqueId = `${roomId}-${role}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        console.log('Creating peer with unique ID:', uniqueId);
         
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: {
-              width: { ideal: 426, max: 640 },
-              height: { ideal: 320, max: 480 },
-              frameRate: { ideal: 12, max: 15 }
-            }, 
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              sampleRate: 22050,
-              channelCount: 1
-            }
-          });
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-            setIsLocalStreamReady(true);
-            onVideoReady(true);
-          }
+        setConnectionStatus('connecting');
+        const peerConfig = process.env.NODE_ENV === 'production' ? {
+          host: window.location.hostname,
+          path: '/peerService/peer',
+          secure: window.location.protocol === 'https:',
+          debug: 2 
+        } : {
+          host: 'localhost',
+          port: 9000,
+          path: '/peer',
+          debug: 2
+        };
+      
+        const newPeer = new Peer(uniqueId, peerConfig);
 
-          const otherRole = role === 'interviewer' ? 'interviewee' : 'interviewer';
+        newPeer.on('open', async (id) => {
+          console.log('Connected to peer server with ID:', id);
+          setConnectionStatus('establishing');
+          
           try {
-            const call = newPeer.call(`${roomId}-${otherRole}`, stream);
+            if (localVideoRef.current?.srcObject) {
+              localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
+              localVideoRef.current.srcObject = null;
+            }
+            
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+              video: {
+                width: { ideal: 426, max: 640 },
+                height: { ideal: 320, max: 480 },
+                frameRate: { ideal: 12, max: 15 }
+              }, 
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 22050,
+                channelCount: 1
+              }
+            });
+            
+            if (localVideoRef.current) {
+              localVideoRef.current.srcObject = stream;
+              localVideoRef.current.onloadedmetadata = () => {
+                localVideoRef.current.play().catch(e => console.log('Could not auto-play local video:', e));
+              };
+              setIsLocalStreamReady(true);
+              
+              const pingInterval = setInterval(() => {
+                if (socketService.socket?.connected) {
+                  socketService.socket.emit('video:ready', { 
+                    roomId,
+                    role,
+                    ready: true 
+                  });
+                  if (stream && stream.getVideoTracks()[0]) {
+                    const track = stream.getVideoTracks()[0];
+                    if (track.readyState === 'ended') {
+                      console.log('Video track ended, requesting new stream');
+                      initPeer(0);
+                      clearInterval(pingInterval);
+                    }
+                  }
+                }
+              }, 5000);
+              
+              newPeer.pingInterval = pingInterval;
+              
+              onVideoReady(true);
+              setConnectionStatus('connected');
+            }
+
+            const otherRole = role === 'interviewer' ? 'interviewee' : 'interviewer';
+            
+            console.log('Listening for peers in room', roomId);
+            newPeer.on('connection', (conn) => {
+              console.log('Received connection from peer:', conn.peer);
+            });
+            
+            socketService.socket.emit('room:peer_present', { 
+              roomId, 
+              peerId: uniqueId,
+              role,
+              userId 
+            });
+            
+            const handleRemotePeer = (remotePeerData) => {
+              if (remotePeerData.role !== role) {
+                console.log('Found remote peer:', remotePeerData);
+                try {
+                  const call = newPeer.call(remotePeerData.peerId, stream);
+                  if (call) {
+                    call.on('stream', (remoteVideoStream) => {
+                      console.log('Received remote stream');
+                      if (remoteVideoRef.current) {
+                        remoteVideoRef.current.srcObject = remoteVideoStream;
+                        remoteVideoRef.current.onloadedmetadata = () => {
+                          remoteVideoRef.current.play().catch(e => console.log('Could not auto-play remote video:', e));
+                        };
+                        setRemoteStream(remoteVideoStream);
+                        onVideoReady(true);
+                        setConnectionStatus('connected');
+                      }
+                    });
+                  }
+                } catch (err) {
+                  console.error('Error calling remote peer:', err);
+                }
+              }
+            };
+            
+            socketService.socket.on('room:peer_info', handleRemotePeer);
+            
+            socketService.socket.emit('room:get_peers', { roomId });
+            
+            newPeer.remotePeerHandler = handleRemotePeer;
+            
+          } catch (err) {
+            console.error('Error accessing media devices:', err);
+            onVideoReady(false);
+            setConnectionStatus('error');
+          }
+        });
+
+        newPeer.on('error', (err) => {
+          console.error('Peer connection error:', err);
+          setConnectionStatus('error');
+          
+          if (err.type === 'unavailable-id' && retryCount < 3) {
+            console.log(`Retrying peer connection in 2 seconds... (attempt ${retryCount + 1})`);
+            setTimeout(() => initPeer(retryCount + 1), 2000);
+            return;
+          }
+          
+          onVideoReady(false);
+        });
+
+        newPeer.on('disconnected', () => {
+          console.log('Peer disconnected, attempting to reconnect...');
+          setConnectionStatus('reconnecting');
+          newPeer.reconnect();
+        });
+
+        newPeer.on('call', async (call) => {
+          console.log('Received call from:', call.peer);
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+              video: {
+                width: { ideal: 426, max: 640 },
+                height: { ideal: 320, max: 480 },
+                frameRate: { ideal: 12, max: 15 }
+              }, 
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 22050,
+                channelCount: 1
+              }
+            });
+            
+            if (localVideoRef.current) {
+              localVideoRef.current.srcObject = stream;
+              localVideoRef.current.onloadedmetadata = () => {
+                localVideoRef.current.play().catch(e => console.log('Could not auto-play local video:', e));
+              };
+              setIsLocalStreamReady(true);
+              onVideoReady(true);
+              setConnectionStatus('connected');
+            }
+            
+            call.answer(stream);
             call.on('stream', (remoteVideoStream) => {
+              console.log('Received remote stream from call');
               if (remoteVideoRef.current) {
                 remoteVideoRef.current.srcObject = remoteVideoStream;
+                remoteVideoRef.current.onloadedmetadata = () => {
+                  remoteVideoRef.current.play().catch(e => console.log('Could not auto-play remote video:', e));
+                };
                 setRemoteStream(remoteVideoStream);
                 onVideoReady(true);
+                setConnectionStatus('connected');
               }
             });
           } catch (err) {
-            console.log(`Waiting for ${otherRole} to join...`);
+            console.error('Error answering call:', err);
+            onVideoReady(false);
+            setConnectionStatus('error');
           }
-        } catch (err) {
-          console.error('Error accessing media devices:', err);
-          onVideoReady(false);
-        }
-      });
+        });
 
-      newPeer.on('error', (err) => {
-        console.error('Peer connection error:', err);
-        
-        if (err.type === 'unavailable-id' && retryCount < 3) {
+        setPeer(newPeer);
+      } catch (error) {
+        console.error('Error in initPeer:', error);
+        setConnectionStatus('error');
+        if (retryCount < 3) {
           console.log(`Retrying peer connection in 2 seconds... (attempt ${retryCount + 1})`);
           setTimeout(() => initPeer(retryCount + 1), 2000);
-          return;
         }
-        
-        onVideoReady(false);
-      });
-
-      newPeer.on('call', async (call) => {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: {
-              width: { ideal: 426, max: 640 },
-              height: { ideal: 320, max: 480 },
-              frameRate: { ideal: 12, max: 15 }
-            }, 
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-              sampleRate: 22050,
-              channelCount: 1
-            }
-          });
-          if (localVideoRef.current) {
-            localVideoRef.current.srcObject = stream;
-            setIsLocalStreamReady(true);
-            onVideoReady(true);
-          }
-          
-          call.answer(stream);
-          call.on('stream', (remoteVideoStream) => {
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = remoteVideoStream;
-              setRemoteStream(remoteVideoStream);
-              onVideoReady(true);
-            }
-          });
-        } catch (err) {
-          console.error('Error answering call:', err);
-          onVideoReady(false);
-        }
-      });
-
-      setPeer(newPeer);
-    } catch (error) {
-      console.error('Error in initPeer:', error);
-      if (retryCount < 3) {
-        console.log(`Retrying peer connection in 2 seconds... (attempt ${retryCount + 1})`);
-        setTimeout(() => initPeer(retryCount + 1), 2000);
       }
-    }
-  };
+    };
 
-  initPeer();
+    initPeer(0);
 
     return () => {
       const cleanup = async () => {
@@ -426,18 +705,35 @@ const VideoChat = ({
         }
         
         if (peer) {
-          peer.destroy();
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          if (peer.pingInterval) {
+            clearInterval(peer.pingInterval);
+          }
+          
+          if (peer.remotePeerHandler) {
+            socketService.socket?.off('room:peer_info', peer.remotePeerHandler);
+          }
+          
+          try {
+            peer.destroy();
+          } catch (e) {
+            console.error('Error destroying peer in cleanup:', e);
+          }
+        }
+        
+        if (connectionMonitorRef.current) {
+          clearInterval(connectionMonitorRef.current);
+          connectionMonitorRef.current = null;
         }
         
         setIsLocalStreamReady(false);
         setRemoteStream(null);
         onVideoReady(false);
+        setConnectionStatus('disconnected');
       };
       
       cleanup();
     };
-  }, [roomId, role]);
+  }, [roomId, role, userId]);
 
   useEffect(() => {
     const handleBeforeUnload = async (e) => {
@@ -480,7 +776,7 @@ const VideoChat = ({
     }
     
     try {
-      setUploadStatus(isFinal ? 'Uploading final recording...' : 'Uploading...');
+      setUploadStatus(isFinal ? 'uploading_final' : 'uploading');
       
       const formData = new FormData();
       formData.append('file', blob, `recording-${roomId}-${role}-${Date.now()}.webm`);
@@ -514,7 +810,7 @@ const VideoChat = ({
       console.log('Upload successful:', uploadResult.url, `(${Math.round(uploadResult.bytes/1024)}KB)`);
       
       if (isFinal) {
-        setUploadStatus('Upload complete');
+        setUploadStatus('upload_complete');
         socketService.socket.emit('upload:status', {
           roomId,
           role,
@@ -532,13 +828,13 @@ const VideoChat = ({
       
       if (retryCount < 3) {
         console.log(`Retrying upload (attempt ${retryCount + 1} of 3)...`);
-        setUploadStatus(`Retrying upload (${retryCount + 1}/3)...`);
+        setUploadStatus(`retrying_upload_${retryCount + 1}`);
         await new Promise(resolve => setTimeout(resolve, 2000));
         return uploadChunks(chunks, isFinal, retryCount + 1);
       }
       
       if (isFinal) {
-        setUploadStatus('Upload failed - please try again');
+        setUploadStatus('upload_failed');
         socketService.socket.emit('upload:status', {
           roomId,
           role,
@@ -687,7 +983,7 @@ const VideoChat = ({
       
     } catch (error) {
       console.error('Error starting recording:', error);
-      setUploadStatus('Failed to start recording');
+      setUploadStatus('recording_failed');
     }
   };
 
@@ -703,7 +999,7 @@ const VideoChat = ({
       
       recorder.stop();
       setIsRecording(false);
-      setUploadStatus('Preparing final recording...');
+      setUploadStatus('preparing_final');
       
       setTimeout(() => {
         const finalChunks = [...recordedChunksRef.current];
@@ -714,7 +1010,7 @@ const VideoChat = ({
         
         if (chunkCount === 0 || totalSize < 1000) {
           console.error('No valid recording data collected');
-          setUploadStatus('Recording failed - no data collected');
+          setUploadStatus('recording_failed');
           return;
         }
         
@@ -725,13 +1021,88 @@ const VideoChat = ({
       
     } catch (error) {
       console.error('Error stopping recording:', error);
-      setUploadStatus('Failed to stop recording properly');
+      setUploadStatus('recording_failed');
     }
+  };
+
+  useEffect(() => {
+    console.log('VideoChat: Upload status changed to:', uploadStatus);
+   
+    if (onUploadStatusChange) {
+      if (uploadStatus === 'processing_recordings') {
+        onUploadStatusChange('loading_videos');
+      } else {
+        onUploadStatusChange(uploadStatus);
+      }
+    }
+  }, [uploadStatus, onUploadStatusChange]);
+
+  useEffect(() => {
+    if (!isInterviewStarted && 
+        (uploadStatus === 'upload_complete' || 
+         uploadStatus === 'complete' || 
+         uploadStatus === '')) {
+      
+      if (!recordings.local && !recordings.remote) {
+        console.log('Upload complete but recordings not loaded, fetching recordings...');
+        setUploadStatus('processing_recordings');
+        
+        const timer = setTimeout(() => {
+          fetchRecordings();
+        }, 2000);
+        
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [isInterviewStarted, uploadStatus, recordings, fetchRecordings]);
+
+  const getStatusMessage = (status) => {
+    if (!status || status === '') return 'Ready to play';
+    
+    if (status === 'loading_videos') return 'Loading recordings...';
+    if (status === 'pending') return 'Preparing to upload...';
+    if (status === 'uploading') return 'Uploading recordings...';
+    if (status === 'uploading_final') return 'Finalizing upload...';
+    if (status === 'preparing_final') return 'Preparing final recording...';
+    if (status === 'processing_recordings') return 'Processing recordings... Please wait';
+    if (status === 'complete') return 'Upload complete';
+    if (status === 'upload_complete') return 'Upload complete';
+    
+    if (status.startsWith('retrying_upload_')) {
+      const attempt = status.replace('retrying_upload_', '');
+      return `Retrying upload (attempt ${attempt})...`;
+    }
+    
+    if (status.includes('failed_to_load')) {
+      if (status.includes('corrupted')) {
+        return 'Error: Recordings are corrupted';
+      } else if (status.includes('No recordings')) {
+        return 'Error: No recordings found';
+      } else {
+        return 'Error loading recordings';
+      }
+    }
+    
+    if (status === 'upload_failed') return 'Upload failed';
+    if (status === 'recording_failed') return 'Recording failed';
+    
+    return status;
   };
 
   return (
     <div className="flex flex-col gap-5 w-full">
-      <div className="flex w-full">
+      <div className="flex w-full relative">
+        {!isInterviewStarted && connectionStatus !== 'connected' && (
+          <div className="absolute top-0 right-0 px-2 py-1 text-xs rounded-bl-md z-10 bg-yellow-500 text-white">
+            {connectionStatus === 'connecting' ? 'Connecting...' :
+             connectionStatus === 'reconnecting' ? 'Reconnecting...' :
+             connectionStatus === 'error' ? 'Connection Error' :
+             connectionStatus === 'waiting' ? 'Waiting for participant...' :
+             connectionStatus === 'establishing' ? 'Establishing connection...' :
+             'Connection issue'}
+          </div>
+        )}
+        
         <div className="flex gap-5 items-center">
           <div className="flex justify-center">
             <video
@@ -836,6 +1207,23 @@ const VideoChat = ({
             </div>
           </div>
         )}
+        
+        {!isInterviewStarted && !recordings.local && uploadStatus === 'loading_videos' && duration > 0 && (
+          <div className="flex gap-5 ml-auto">
+            <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
+              <div className="flex flex-col items-center">
+                <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                <span className="text-xs text-gray-500">Loading...</span>
+              </div>
+            </div>
+            <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
+              <div className="flex flex-col items-center">
+                <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                <span className="text-xs text-gray-500">Loading...</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-4">
         {isRecording && (
@@ -844,18 +1232,18 @@ const VideoChat = ({
             Recording
           </div>
         )}
-        {uploadStatus && (
+        {uploadStatus && (isRecording || duration > 0 || uploadStatus.includes('fail') || uploadStatus.includes('complete')) && (
           <div className={`text-sm flex items-center gap-2 ${
-            uploadStatus === 'Upload complete' 
+            uploadStatus === 'upload_complete' 
               ? 'text-green-500' 
-              : uploadStatus === 'Upload failed'
+              : uploadStatus === 'upload_failed' || uploadStatus.includes('failed')
               ? 'text-red-500'
               : 'text-blue-500'
           }`}>
-            {uploadStatus === 'Uploading...' && (
+            {(uploadStatus.startsWith('uploading') || uploadStatus === 'loading_videos') && (
               <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
             )}
-            {uploadStatus}
+            {getStatusMessage(uploadStatus)}
           </div>
         )}
       </div>
