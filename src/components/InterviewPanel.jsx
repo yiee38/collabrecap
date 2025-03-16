@@ -1,12 +1,18 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import NotePad from "./NotepadTab"
 import QuestionEditor from "./QuestionEditor"
+import { useState } from "react"
 
-const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, handleTimestampClick, currentTime, archivedNotes, archivedNoteLines, handleSeek, handleLiveUpdate, collaborationService }) => {
+const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, handleTimestampClick, currentTime, archivedNotes, archivedNoteLines, handleSeek, handleLiveUpdate, collaborationService, activeTab, onTabChange }) => {
 
   return (
     <div className="flex flex-col gap-3 overflow-hidden">
-      <Tabs defaultValue="question" className="border w-[500px] border-gray-200 rounded-lg px-8 py-8 " >
+      <Tabs 
+        defaultValue="question" 
+        className="border w-[500px] border-gray-200 rounded-lg px-8 py-8 " 
+        onValueChange={onTabChange}
+        value={activeTab}
+      >
         <TabsList>
           <TabsTrigger value="question">Question</TabsTrigger>
           <TabsTrigger value="notes">Notes</TabsTrigger>

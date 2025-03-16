@@ -45,6 +45,7 @@ const InterviewRoom = () => {
   const [archivedNotes, setArchivedNotes] = useState('');
   const [archivedNoteLines, setArchivedNoteLines] = useState([]);
   const [archivedQuestionContent, setArchivedQuestionContent] = useState('');
+  const [activeTab, setActiveTab] = useState('question');
   const [isCollaborationReady, setIsCollaborationReady] = useState(false);
   
   useEffect(() => {
@@ -657,7 +658,11 @@ const InterviewRoom = () => {
   };
 
   const addNoteAnchor = () => {
-    notepadRef.current?.setManualTimestamp();
+    if (activeTab === "notes") {
+      notepadRef.current?.setManualTimestamp();
+    } else {
+      console.log("Cannot add note anchor while on the question tab");
+    }
   };
 
   const handleTimestampClick = (timestamp) => {
@@ -834,6 +839,8 @@ const InterviewRoom = () => {
               handleLiveUpdate={handleLiveUpdate}
               collaborationService={collaborationRef.current}
               questionContent={archivedQuestionContent}
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
             />
           ) : (
             <div className="flex flex-col gap-3 overflow-hidden">
@@ -863,18 +870,22 @@ const InterviewRoom = () => {
 
         {roomState === 'ACTIVE' && role === 'interviewer' && (
           <div className='flex flex-row gap-4 justify-start w-full'>
-            <Button 
-              onClick={addNoteAnchor}
-              variant="secondary"
-            >
-              Add Note Anchor
-            </Button>
+            
             <Button 
               onClick={endInterview}
               variant="destructive"
             >
               End Interview
             </Button>
+            {activeTab ==="notes" && (
+              <Button 
+                onClick={addNoteAnchor}
+                variant="secondary"
+                disabled={activeTab !== "notes"}
+              >
+                Add Note Anchor
+              </Button>
+            )}
           </div>
         )}
         

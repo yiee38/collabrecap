@@ -37,6 +37,11 @@ const VideoChat = ({
   const animationFrameRef = useRef(null);
   const connectionMonitorRef = useRef(null);
   const lastConnectionCheckRef = useRef(Date.now());
+  const [videoReady, setVideoReady] = useState({
+    local: false,
+    remote: false
+  });
+
 
   useEffect(() => {
     console.log('VideoChat component mounted, cleaning up any existing connections');
@@ -80,10 +85,14 @@ const VideoChat = ({
         }
       };
 
-      playVideo(localRecordingRef.current);
-      playVideo(remoteRecordingRef.current);
+      if (videoReady.local) {
+        playVideo(localRecordingRef.current);
+      }
+      if (videoReady.remote) {
+        playVideo(remoteRecordingRef.current);
+      }
     }
-  }, [isPlaying, isInterviewStarted, currentTime, duration]);
+  }, [isPlaying, isInterviewStarted, currentTime, duration, videoReady]);
 
   useEffect(() => {
     if (!isInterviewStarted && !isPlaying && (localRecordingRef.current || remoteRecordingRef.current)) {
@@ -112,6 +121,10 @@ const VideoChat = ({
         video.addEventListener('timeupdate', onTimeUpdate);
         return () => video.removeEventListener('timeupdate', onTimeUpdate);
       };
+      setVideoReady({
+        local: false,
+        remote: false
+      });
 
       const cleanupLocal = initVideo(localRecordingRef.current);
       const cleanupRemote = initVideo(remoteRecordingRef.current);
@@ -122,6 +135,13 @@ const VideoChat = ({
       };
     }
   }, [isInterviewStarted]);
+
+  useEffect(() => {
+    setVideoReady({
+      local: false,
+      remote: false
+    });
+  }, [recordings]);
 
   useEffect(() => {
     if (!isInterviewStarted) {
@@ -454,6 +474,8 @@ const VideoChat = ({
     }
   }, [isInterviewStarted, recordings]);
 
+  /* Back up of video error handling */
+  /*
   const handleVideoError = async (videoRef, recordingId, isLocal) => {
     console.error(`Error loading ${isLocal ? 'local' : 'remote'} video`);
     
@@ -473,6 +495,7 @@ const VideoChat = ({
       console.error('Failed to check recording:', err);
     }
   };
+  */
 
   useEffect(() => {
     const initPeer = async (retryCount = 0) => {
@@ -1176,19 +1199,51 @@ const VideoChat = ({
             </button>
           </div>
         )}
-
-        {!isInterviewStarted && recordings.local && (
+  {/*Back up of video plays */}
+        {false && !isInterviewStarted && recordings.local && (
           <div className="flex gap-5 ml-auto">
+            {/* LOcal videos */}
             <div className="flex justify-center">
-              <video
-                ref={localRecordingRef}
-                playsInline
-                preload="metadata"
-                className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
-                src={recordings.local.url}
-                onError={() => console.error('Error loading local recording')}
-              />
+              {videoReady.local ? (
+                <video
+                  ref={localRecordingRef}
+                  playsInline
+                  preload="metadata"
+                  className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
+                  src={recordings.local.url}
+                  onError={() => console.error('Error loading local recording')}
+                />) 
+                :(
+                  <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
+                    <div className="flex flex-col items-center">
+                      <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                      <span className="text-xs text-gray-500">Loading video...</span>
+                    </div>
+                  </div>
+                )
+              }
+              {/* Hidden video for preloading */}
+              {!videoReady.local && (
+                <video
+                  style={{ display: 'none' }}
+                  preload="metadata"
+                  src={recordings.local.url}
+                  onLoadedData={() => setVideoReady(prev => ({ ...prev, local: true }))}
+                  onError={(e) => {
+                    console.log("Error preloading local video, will retry");
+                    // Retry loading with a delay and cache-busting
+                    setTimeout(() => {
+                      const video = e.target;
+                      const timestamp = Date.now();
+                      const originalSrc = video.src.split('?')[0];
+                      video.src = `${originalSrc}?t=${timestamp}`;
+                    }, 2000);
+                  }}
+                />
+              )}
+             
             </div>
+            {/* Remote videos */}
             <div className="flex justify-center">
               {recordings.remote ? (
                 <video
@@ -1203,6 +1258,100 @@ const VideoChat = ({
                 <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
                   <span className="text-sm text-gray-500">No Recording</span>
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {!isInterviewStarted && (recordings.local || recordings.remote) && (
+          <div className="flex gap-5 ml-auto">
+            {/* Local video container */}
+            <div className="flex justify-center relative">
+              {recordings.local ? (
+                videoReady.local ? (
+                  <video
+                    ref={localRecordingRef}
+                    playsInline
+                    preload="metadata"
+                    className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
+                    src={recordings.local.url}
+                  />
+                ) : (
+                  <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
+                    <div className="flex flex-col items-center">
+                      <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                      <span className="text-xs text-gray-500">Loading...</span>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
+                  <span className="text-sm text-gray-500">No Recording</span>
+                </div>
+              )}
+              
+              {/* Hidden video for preloading */}
+              {recordings.local && !videoReady.local && (
+                <video
+                  style={{ display: 'none' }}
+                  preload="metadata"
+                  src={recordings.local.url}
+                  onLoadedData={() => setVideoReady(prev => ({ ...prev, local: true }))}
+                  onError={(e) => {
+                    console.log("Error preloading local video, will retry");
+                    setTimeout(() => {
+                      const video = e.target;
+                      const timestamp = Date.now();
+                      const originalSrc = video.src.split('?')[0];
+                      video.src = `${originalSrc}?t=${timestamp}`;
+                    }, 2000);
+                  }}
+                />
+              )}
+            </div>
+            
+            {/* Remote video container */}
+            <div className="flex justify-center relative">
+              {recordings.remote ? (
+                videoReady.remote ? (
+                  <video
+                    ref={remoteRecordingRef}
+                    playsInline
+                    preload="metadata"
+                    className="h-[100px] w-[100px] bg-gray-200 rounded-lg object-cover"
+                    src={recordings.remote.url}
+                  />
+                ) : (
+                  <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
+                    <div className="flex flex-col items-center">
+                      <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                      <span className="text-xs text-gray-500">Loading...</span>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="h-[100px] w-[100px] bg-gray-200 rounded-lg flex items-center justify-center">
+                  <span className="text-sm text-gray-500">No Recording</span>
+                </div>
+              )}
+              
+              {/* Hidden video for preloading */}
+              {recordings.remote && !videoReady.remote && (
+                <video
+                  style={{ display: 'none' }}
+                  preload="metadata"
+                  src={recordings.remote.url}
+                  onLoadedData={() => setVideoReady(prev => ({ ...prev, remote: true }))}
+                  onError={(e) => {
+                    console.log("Error preloading remote video, will retry");
+                    setTimeout(() => {
+                      const video = e.target;
+                      const timestamp = Date.now();
+                      const originalSrc = video.src.split('?')[0];
+                      video.src = `${originalSrc}?t=${timestamp}`;
+                    }, 2000);
+                  }}
+                />
               )}
             </div>
           </div>
