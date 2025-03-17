@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { EditorView, Decoration, DecorationSet, ViewPlugin, WidgetType } from '@codemirror/view';
 import CollaborationService from '@/lib/collaborationService';
 import { useRouter } from 'next/navigation';
+import { throttle } from 'lodash';
 
 const wrapStyle = EditorView.lineWrapping;
 
@@ -49,6 +50,7 @@ const CodeEditor = ({
 }) => {
   const [content, setContent] = useState(initialContent);
   const [operations, setOperations] = useState([]);
+  const [isDragging, setIsDragging] = useState(false);
   const editorRef = useRef(null);
   const collaborationRef = useRef(null);
   const scrollerRef = useRef(null);
@@ -144,9 +146,18 @@ const CodeEditor = ({
       const currentTime = Date.now();
       const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
       
-     
-      if (!isPlaying || currentApplier === userId || (inTransition && role === 'interviewer')) {
-        const sortedOps = [...operations].sort((a, b) => a.timestamp - b.timestamp);
+      // Always apply operations in archived mode, regardless of who is the applier
+      if (roomState === 'ARCHIVED' || !isPlaying || currentApplier === userId || (inTransition && role === 'interviewer')) {
+        // Deduplicate operations before sorting and applying
+        const uniqueOpsMap = new Map();
+        operations.forEach(op => {
+          const key = `${op.timestamp}-${op.from}-${op.to}`;
+          uniqueOpsMap.set(key, op);
+        });
+        
+        const uniqueOps = Array.from(uniqueOpsMap.values());
+        const sortedOps = uniqueOps.sort((a, b) => a.timestamp - b.timestamp);
+        
         for (const op of sortedOps) {
           if (op.timestamp > targetTime) break;
           const fromPos = Math.min(op.from, result.length);
@@ -154,6 +165,31 @@ const CodeEditor = ({
           result = result.slice(0, fromPos) + op.text + result.slice(toPos);
         }
       }
+      
+      // If result is empty but we have operations and we're in archived mode, 
+      // return the content at the last operation before targetTime
+      if (result === '' && operations.length > 0 && roomState === 'ARCHIVED') {
+        // Deduplicate operations before filtering and applying
+        const uniqueOpsMap = new Map();
+        operations.forEach(op => {
+          const key = `${op.timestamp}-${op.from}-${op.to}`;
+          uniqueOpsMap.set(key, op);
+        });
+        
+        const uniqueOps = Array.from(uniqueOpsMap.values());
+        const sortedOps = uniqueOps.sort((a, b) => a.timestamp - b.timestamp);
+        const opsBeforeTarget = sortedOps.filter(op => op.timestamp <= targetTime);
+        
+        if (opsBeforeTarget.length > 0) {
+          result = '';
+          for (const op of opsBeforeTarget) {
+            const fromPos = Math.min(op.from, result.length);
+            const toPos = Math.min(op.to, result.length);
+            result = result.slice(0, fromPos) + op.text + result.slice(toPos);
+          }
+        }
+      }
+      
       return result;
     } catch (error) {
       console.error('Error in getContentAtTime:', error);
@@ -168,12 +204,59 @@ const CodeEditor = ({
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`;
   };
 
+  // Handle drag start from parent
   useEffect(() => {
-    const newContent = getContentAtTime(currentTimeOverride);
-    if (newContent !== content) {
-      setContent(newContent);
+    // Only apply drag event handling in archived mode
+    if (roomState !== 'ARCHIVED') return;
+    
+    const handleDragStartEvent = () => {
+      setIsDragging(true);
+    };
+    
+    const handleDragEndEvent = () => {
+      setIsDragging(false);
+      // Update content immediately when dragging ends
+      const newContent = getContentAtTime(currentTimeOverride);
+      if (newContent !== content) {
+        setContent(newContent);
+      }
+    };
+    
+    // Add event listeners to window to capture drag events
+    window.addEventListener('dragstart:timeline', handleDragStartEvent);
+    window.addEventListener('dragend:timeline', handleDragEndEvent);
+    
+    return () => {
+      window.removeEventListener('dragstart:timeline', handleDragStartEvent);
+      window.removeEventListener('dragend:timeline', handleDragEndEvent);
+    };
+  }, [currentTimeOverride, content, roomState]);
+
+  // Throttled content update during timeline changes
+  const updateContentThrottled = useCallback(
+    throttle((time) => {
+      // Always update content, but with different frequencies based on state
+      const newContent = getContentAtTime(time);
+      if (newContent !== content) {
+        setContent(newContent);
+      }
+    }, isDragging && roomState === 'ARCHIVED' ? 200 : 50), // Slower updates during dragging in archived mode
+    [operations, content, isDragging, roomState]
+  );
+
+  // Update content when timeline position changes
+  useEffect(() => {
+    // In active interview mode, don't use throttling for content updates
+    if (roomState === 'ACTIVE' && !isPlaying) {
+      return; // Let the normal editing flow handle content updates
     }
-  }, [currentTimeOverride]);
+    
+    updateContentThrottled(currentTimeOverride);
+    
+    return () => {
+      updateContentThrottled.cancel();
+    };
+  }, [currentTimeOverride, updateContentThrottled, roomState, isPlaying]);
 
   useEffect(() => {
     if (!collaborationRef.current && roomId && userId) {
@@ -218,16 +301,27 @@ const CodeEditor = ({
     const currentTime = Date.now();
     const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
     
-    const shouldApplyOperations = !isPlaying || 
+    // In archived mode, always apply operations
+    const shouldApplyOperations = roomState === 'ARCHIVED' || 
+      !isPlaying || 
       currentApplier === userId || 
       (inTransition && role === 'interviewer');
     
     if (shouldApplyOperations) {
-      const filteredOps = initialOperations.filter(op => 
+      // Deduplicate operations by timestamp and position
+      const uniqueOpsMap = new Map();
+      
+      initialOperations.forEach(op => {
+        const key = `${op.timestamp}-${op.from}-${op.to}`;
+        uniqueOpsMap.set(key, op);
+      });
+      
+      const filteredOps = Array.from(uniqueOpsMap.values()).filter(op => 
         !op.source || 
         op.source === userId ||
-        (roomState === 'ARCHIVED' && isPlaying)
+        roomState === 'ARCHIVED'
       );
+      
       setOperations(filteredOps);
     } else {
       setOperations([]);
@@ -355,7 +449,7 @@ const CodeEditor = ({
 
   return (
     <div className="w-[500px] mx-auto p-4 border border-gray-200 rounded-lg bg-white">
-      <div className="border border-gray-200 rounded-md overflow-hidden mt-4 mb-4">
+      <div className="border border-gray-200 rounded-md overflow-hidden mt-4 mb-4 relative">
         <CodeMirror
           onMouseMove={handleMouseMove}
           ref={editorRef}

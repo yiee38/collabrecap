@@ -153,7 +153,9 @@ const Timeline = ({
 
   const handleDragEnd = async (e) => {
     await onDragEnd(e);
-    debouncedSeek.flush();
+    setTimeout(() => {
+      debouncedSeek.flush();
+    }, 30);
   };
 
   useEffect(() => {
