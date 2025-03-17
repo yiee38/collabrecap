@@ -288,9 +288,7 @@ class CollaborationService {
         this.yTimeline.set('isPlaying', isPlaying);
         if (!isPlaying) {
           this.yTimeline.set('playbackController', null);
-          
-          const status = this.yState.get('status');
-          if ((status !== 'ended' && status !== 'archived') && (!inTransition || this.role !== 'interviewer')) {
+          if (!inTransition || this.role !== 'interviewer') {
             this.yState.set('operationApplier', null);
           }
         } else if (isPlaying && playbackController !== this.userId) {
@@ -317,8 +315,6 @@ class CollaborationService {
       isSeeking: this.yTimeline.get('isSeeking'),
       seekingUser: this.yTimeline.get('seekingUser')
     };
-    
-    let updateDebounceTimeout = null;
 
     this.yTimeline.observe(() => {
       const currentTime = this.yTimeline.get('currentTime');
@@ -333,19 +329,13 @@ class CollaborationService {
           isSeeking !== lastUpdate.isSeeking ||
           seekingUser !== lastUpdate.seekingUser) {
         
-        if (updateDebounceTimeout) {
-          clearTimeout(updateDebounceTimeout);
-        }
+        lastUpdate = { currentTime, controlledBy, isPlaying, isSeeking, seekingUser };
         
-        updateDebounceTimeout = setTimeout(() => {
-          lastUpdate = { currentTime, controlledBy, isPlaying, isSeeking, seekingUser };
-          
-          if (controlledBy !== this.userId || 
-              currentTime !== this.lastAppliedTime || 
-              isPlaying !== undefined) {
-            callback(lastUpdate);
-          }
-        }, 30);
+        if (controlledBy !== this.userId || 
+            currentTime !== this.lastAppliedTime || 
+            isPlaying !== undefined) {
+          callback(lastUpdate);
+        }
       }
     });
   }

@@ -103,6 +103,7 @@ const QuestionEditor = ({ collaborationService }) => {
           bindingRef.current = null;
         }
         
+        // Safely clean up awareness state
         if (awareness) {
           try {
             const currentState = awareness.getLocalState();
@@ -123,6 +124,7 @@ const QuestionEditor = ({ collaborationService }) => {
           }
         }
         
+        // Clean up event listeners
         try {
           if (quillEditor) {
             quillEditor.off('selection-change', cursorHandler);
@@ -133,6 +135,7 @@ const QuestionEditor = ({ collaborationService }) => {
         
         document.removeEventListener('visibilitychange', handleVisibilityChange);
         
+        // Clear cursors
         try {
           if (cursors) {
             cursors.clearCursors();
