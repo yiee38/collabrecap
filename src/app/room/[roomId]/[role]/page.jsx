@@ -274,12 +274,10 @@ const InterviewRoom = () => {
             playIntervalRef.current = null;
           }
           
-          // Safely clean up awareness state before destroying collaboration service
           if (collaborationRef.current?.awareness) {
             try {
               const currentState = collaborationRef.current.awareness.getLocalState();
               if (currentState) {
-                // Clear cursor state to prevent "Cannot read properties of null (reading 'cursors')" errors
                 collaborationRef.current.awareness.setLocalState({
                   ...currentState,
                   cursors: null,
@@ -291,7 +289,6 @@ const InterviewRoom = () => {
             }
           }
           
-          // Safely destroy collaboration service
           if (collaborationRef.current) {
             try {
               collaborationRef.current.destroy();
@@ -301,7 +298,6 @@ const InterviewRoom = () => {
             collaborationRef.current = null;
           }
           
-          // Safely disconnect socket
           try {
             socketService.disconnect();
           } catch (err) {
@@ -373,7 +369,6 @@ const InterviewRoom = () => {
           collaborationRef.current.yState.set('operationApplier', session.user.email);
           collaborationRef.current.yState.set('operationsInitialized', true);
           collaborationRef.current.yState.set('operationsInitializer', session.user.email);
-          collaborationRef.current.yState.set('transitionTimestamp', Date.now());
         });
       }
       
@@ -400,27 +395,18 @@ const InterviewRoom = () => {
   };
 
   const handleOperationsUpdate = (newOperations, newDuration) => {
-    const currentApplier = collaborationRef.current?.yState.get('operationApplier');
-    const transitionTimestamp = collaborationRef.current?.yState.get('transitionTimestamp');
-    const currentTime = Date.now();
-    const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
+    const isArchived = roomState === 'ARCHIVED';
     
-    const shouldApplyOperations = !isPlaying || 
-      currentApplier === session?.user?.email || 
-      (inTransition && role === 'interviewer');
-    
-    if (shouldApplyOperations) {
-      const ops = newOperations.filter(op => 
-        !op.source || 
-        op.source === session?.user?.email ||
-        (roomState === 'ARCHIVED' && isPlaying) 
-      );
+    if (isArchived || !isPlaying) {
+      const ops = isArchived ? 
+        newOperations : 
+        newOperations.filter(op => !op.source || op.source === session?.user?.email);
       
       console.log(`Updating operations (${roomState}):`, ops.length);
       setOperations(ops);
       setDuration(newDuration);
       
-      if (roomState === 'ARCHIVED' && !inTransition) {
+      if (isArchived) {
         const initializer = collaborationRef.current?.yState.get('operationsInitializer');
         const isInitialized = collaborationRef.current?.yState.get('operationsInitialized');
         
@@ -514,18 +500,11 @@ const InterviewRoom = () => {
       
       try {
         if (collaborationRef.current?.doc) {
-          const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
-          const currentTime = Date.now();
-          const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-          
           collaborationRef.current.doc.transact(() => {
             collaborationRef.current.yTimeline.set('isPlaying', false);
             collaborationRef.current.yTimeline.set('playbackController', null);
             collaborationRef.current.yTimeline.set('controlledBy', null);
-            
-            if (!inTransition || role !== 'interviewer') {
-              collaborationRef.current.yState.set('operationApplier', null);
-            }
+            collaborationRef.current.yState.set('operationApplier', null);
           });
         }
       } catch (error) {
@@ -543,15 +522,8 @@ const InterviewRoom = () => {
     
     try {
       if (collaborationRef.current?.doc) {
-        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
-        const currentTime = Date.now();
-        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-        
         collaborationRef.current.doc.transact(() => {
-          if ((inTransition && role === 'interviewer') || !inTransition) {
-            collaborationRef.current.yState.set('operationApplier', session?.user?.email);
-          }
-          
+          collaborationRef.current.yState.set('operationApplier', session?.user?.email);
           collaborationRef.current.yTimeline.set('isPlaying', true);
           collaborationRef.current.yTimeline.set('playbackController', session?.user?.email);
           collaborationRef.current.yTimeline.set('controlledBy', null);
@@ -586,17 +558,10 @@ const InterviewRoom = () => {
     
     try {
       if (collaborationRef.current?.doc) {
-        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
-        const currentTime = Date.now();
-        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-        
         collaborationRef.current.doc.transact(() => {
           collaborationRef.current.yTimeline.set('isPlaying', false);
           collaborationRef.current.yTimeline.set('playbackController', null);
-
-          if (!inTransition || role !== 'interviewer') {
-            collaborationRef.current.yState.set('operationApplier', null);
-          }
+          collaborationRef.current.yState.set('operationApplier', null);
         });
         
         collaborationRef.current.doc.transact(() => {
@@ -622,17 +587,10 @@ const InterviewRoom = () => {
     
     try {
       if (collaborationRef.current?.doc) {
-        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
-        const currentTime = Date.now();
-        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-        
         collaborationRef.current.doc.transact(() => {
           collaborationRef.current.yTimeline.set('isPlaying', false);
           collaborationRef.current.yTimeline.set('playbackController', null);
-          
-          if (!inTransition || role !== 'interviewer') {
-            collaborationRef.current.yState.set('operationApplier', null);
-          }
+          collaborationRef.current.yState.set('operationApplier', null);
         });
         
         collaborationRef.current.doc.transact(() => {
@@ -651,18 +609,11 @@ const InterviewRoom = () => {
     
     try {
       if (collaborationRef.current?.doc) {
-        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
-        const currentTime = Date.now();
-        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-        
         collaborationRef.current.doc.transact(() => {
           collaborationRef.current.yTimeline.set('controlledBy', null);
           collaborationRef.current.yTimeline.set('isSeeking', false);
           collaborationRef.current.yTimeline.set('seekingUser', null);
-          
-          if (!inTransition || role !== 'interviewer') {
-            collaborationRef.current.yState.set('operationApplier', null);
-          }
+          collaborationRef.current.yState.set('operationApplier', null);
         });
       }
     } catch (error) {
@@ -684,17 +635,10 @@ const InterviewRoom = () => {
     
     try {
       if (collaborationRef.current?.doc) {
-        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
-        const currentTime = Date.now();
-        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-        
         collaborationRef.current.doc.transact(() => {
           collaborationRef.current.yTimeline.set('isPlaying', false);
           collaborationRef.current.yTimeline.set('playbackController', null);
-          
-          if (!inTransition || role !== 'interviewer') {
-            collaborationRef.current.yState.set('operationApplier', null);
-          }
+          collaborationRef.current.yState.set('operationApplier', null);
         });
         
         collaborationRef.current.doc.transact(() => {
@@ -734,19 +678,11 @@ const InterviewRoom = () => {
     
     try {
       if (collaborationRef.current?.doc) {
-        const transitionTimestamp = collaborationRef.current.yState.get('transitionTimestamp');
-        const currentTime = Date.now();
-        const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-        
         if (isPlaying) {
           collaborationRef.current.doc.transact(() => {
             collaborationRef.current.yTimeline.set('isPlaying', false);
             collaborationRef.current.yTimeline.set('playbackController', null);
-            
-         
-            if (!inTransition || role !== 'interviewer') {
-              collaborationRef.current.yState.set('operationApplier', null);
-            }
+            collaborationRef.current.yState.set('operationApplier', null);
           });
         }
         

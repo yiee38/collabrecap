@@ -139,20 +139,12 @@ const CodeEditor = ({
   const getContentAtTime = (targetTime) => {
     try {
       let result = '';
-      const currentApplier = collaborationRef.current?.yState.get('operationApplier');
-      const transitionTimestamp = collaborationRef.current?.yState.get('transitionTimestamp');
-      const currentTime = Date.now();
-      const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-      
-     
-      if (!isPlaying || currentApplier === userId || (inTransition && role === 'interviewer')) {
-        const sortedOps = [...operations].sort((a, b) => a.timestamp - b.timestamp);
-        for (const op of sortedOps) {
-          if (op.timestamp > targetTime) break;
-          const fromPos = Math.min(op.from, result.length);
-          const toPos = Math.min(op.to, result.length);
-          result = result.slice(0, fromPos) + op.text + result.slice(toPos);
-        }
+      const sortedOps = [...operations].sort((a, b) => a.timestamp - b.timestamp);
+      for (const op of sortedOps) {
+        if (op.timestamp > targetTime) break;
+        const fromPos = Math.min(op.from, result.length);
+        const toPos = Math.min(op.to, result.length);
+        result = result.slice(0, fromPos) + op.text + result.slice(toPos);
       }
       return result;
     } catch (error) {
@@ -213,26 +205,15 @@ const CodeEditor = ({
   }, [roomId, userId, role]);
 
   useEffect(() => {
-    const currentApplier = collaborationRef.current?.yState.get('operationApplier');
-    const transitionTimestamp = collaborationRef.current?.yState.get('transitionTimestamp');
-    const currentTime = Date.now();
-    const inTransition = transitionTimestamp && (currentTime - transitionTimestamp <= 5000);
-    
-    const shouldApplyOperations = !isPlaying || 
-      currentApplier === userId || 
-      (inTransition && role === 'interviewer');
-    
-    if (shouldApplyOperations) {
+    if (roomState === 'ARCHIVED') {
+      setOperations(initialOperations);
+    } else {
       const filteredOps = initialOperations.filter(op => 
-        !op.source || 
-        op.source === userId ||
-        (roomState === 'ARCHIVED' && isPlaying)
+        !op.source || op.source === userId
       );
       setOperations(filteredOps);
-    } else {
-      setOperations([]);
     }
-  }, [initialOperations, userId, roomState, isPlaying, role]);
+  }, [initialOperations, userId, roomState]);
 
   const scrollHander = (view) => {
     const currentScroll = scrollerRef.current?.scrollTop || 0;
@@ -366,7 +347,8 @@ const CodeEditor = ({
             javascript(), 
             wrapStyle, 
             createRemotePointersPlugin(),
-            ...(collaborationRef.current?.getExtensions() || [])
+            ...(isInterviewActive && !isPlaying ? 
+                (collaborationRef.current?.getExtensions() || []) : [])
           ]}
           onChange={handleChange}
           editable={isInterviewActive && !isPlaying}
