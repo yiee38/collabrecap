@@ -21,8 +21,7 @@ const VideoChat = ({
   const [isRecording, setIsRecording] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [recordings, setRecordings] = useState({ local: null, remote: null });
-  const [isRecordingsMuted, setIsRecordingsMuted] = useState(true);
-  const [isAutoMuteEnabled, setIsAutoMuteEnabled] = useState(true);
+  const [isRecordingsMuted, setIsRecordingsMuted] = useState(false);
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
   const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('initializing');
@@ -144,57 +143,65 @@ const VideoChat = ({
   }, [recordings]);
 
   useEffect(() => {
+    const handleMuteStateChange = ({ isMuted, userId: senderId }) => {
+      console.log(`Received mute state change from user ${senderId}:`, isMuted);
+      setIsRecordingsMuted(isMuted);
+      
+      if (localRecordingRef.current) {
+        localRecordingRef.current.muted = isMuted;
+      }
+      if (remoteRecordingRef.current) {
+        remoteRecordingRef.current.muted = isMuted;
+      }
+    };
+
+    socketService.onMuteStateChange(handleMuteStateChange);
+
+    return () => {
+      if (socketService.socket) {
+        socketService.socket.off('video:mute:receive', handleMuteStateChange);
+      }
+    };
+  }, []);
+
+  const handleMuteToggle = () => {
+    const newMuteState = !isRecordingsMuted;
+    setIsRecordingsMuted(newMuteState);
+    
+    if (localRecordingRef.current) {
+      localRecordingRef.current.muted = newMuteState;
+    }
+    if (remoteRecordingRef.current) {
+      remoteRecordingRef.current.muted = newMuteState;
+    }
+    
+    socketService.shareMuteState(roomId, newMuteState, userId);
+  };
+
+  useEffect(() => {
     if (!isInterviewStarted) {
       const monitorConnection = () => {
-        const now = Date.now();
-        const timeSinceLastCheck = now - lastConnectionCheckRef.current;
+        const currentTime = Date.now();
         
-        if (timeSinceLastCheck > 20000) {
-          lastConnectionCheckRef.current = now;
+        if (currentTime - lastConnectionCheckRef.current < 10000) {
+          return;
+        }
+        
+        lastConnectionCheckRef.current = currentTime;
+        
+        if (peer && peer.disconnected) {
+          console.log('Peer is disconnected, attempting to reconnect...');
+          setConnectionStatus('reconnecting');
           
-          const localStreamActive = localVideoRef.current?.srcObject && 
-                                   localVideoRef.current.srcObject.active;
-          
-          const localVideoActive = localStreamActive && 
-                                   localVideoRef.current.srcObject.getVideoTracks().some(track => track.readyState === 'live');
-          
-          const peerConnected = peer && peer.open && !peer.destroyed;
-          
-          console.log('Checking connection health:', { 
-            localStreamActive, 
-            localVideoActive, 
-            peerConnected,
-            connectionStatus: connectionStatus
-          });
-          
-          if (!localStreamActive || !localVideoActive || !peerConnected) {
-            console.log('⚠️ Connection check failed', { 
-              localStreamActive, 
-              localVideoActive, 
-              peerConnected 
-            });
-            setConnectionStatus('reconnecting');
-            
-            if (peer) {
-              console.log('Destroying peer connection for reconnection');
-              try {
-                peer.destroy();
-              } catch (e) {
-                console.error('Error destroying peer:', e);
-              }
-            }
-            
-            onVideoReady(false);
-            
-            setTimeout(() => {
-              console.log('Attempting reconnection...');
+          setTimeout(() => {
+            if (peer && peer.disconnected) {
               initPeer(0);
-            }, 1000);
-          } else {
-            if (connectionStatus !== 'connected') {
-              console.log('Connection is healthy, setting status to connected');
-              setConnectionStatus('connected');
             }
+          }, 2000);
+        } else {
+          if (connectionStatus !== 'connected') {
+            console.log('Connection is healthy, setting status to connected');
+            setConnectionStatus('connected');
             onVideoReady(true);
             
             if (socketService.socket?.connected) {
@@ -208,8 +215,8 @@ const VideoChat = ({
         }
       };
       
-      console.log('Setting up connection monitoring');
-      connectionMonitorRef.current = setInterval(monitorConnection, 5000);
+      console.log('Setting up connection monitoring (interview not started)');
+      connectionMonitorRef.current = setInterval(monitorConnection, 10000);
       
       return () => {
         if (connectionMonitorRef.current) {
@@ -224,69 +231,6 @@ const VideoChat = ({
       connectionMonitorRef.current = null;
     }
   }, [isInterviewStarted, peer, roomId, role, connectionStatus]);
-
-  const setupAudioAnalysis = (stream, isLocal = true) => {
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    
-    const source = audioContext.createMediaStreamSource(stream);
-    source.connect(analyser);
-    
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-    const checkAudioLevel = () => {
-      analyser.getByteFrequencyData(dataArray);
-      const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-      if (isLocal) {
-        setIsLocalSpeaking(average > 30);
-      } else {
-        setIsRemoteSpeaking(average > 30);
-      }
-      animationFrameRef.current = requestAnimationFrame(checkAudioLevel);
-    };
-    checkAudioLevel();
-
-    return { audioContext, analyser };
-  };
-
-  useEffect(() => {
-    if (isAutoMuteEnabled && !isInterviewStarted && isPlaying) {
-      const shouldMute = isLocalSpeaking || isRemoteSpeaking;
-      setIsRecordingsMuted(shouldMute);
-      
-      if (localRecordingRef.current) {
-        localRecordingRef.current.muted = shouldMute;
-      }
-      if (remoteRecordingRef.current) {
-        remoteRecordingRef.current.muted = shouldMute;
-      }
-    }
-  }, [isLocalSpeaking, isRemoteSpeaking, isAutoMuteEnabled, isInterviewStarted, isPlaying]);
-
-  useEffect(() => {
-    const cleanupContexts = [];
-
-    if (localVideoRef.current?.srcObject) {
-      const { audioContext } = setupAudioAnalysis(localVideoRef.current.srcObject, true);
-      cleanupContexts.push(audioContext);
-    }
-
-    if (remoteVideoRef.current?.srcObject) {
-      const { audioContext } = setupAudioAnalysis(remoteVideoRef.current.srcObject, false);
-      cleanupContexts.push(audioContext);
-    }
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-      cleanupContexts.forEach(context => {
-        if (context) {
-          context.close();
-        }
-      });
-    };
-  }, [localVideoRef.current?.srcObject, remoteVideoRef.current?.srcObject]);
 
   const fetchRecordings = async (retryCount = 0) => {
     try {
@@ -837,26 +781,37 @@ const VideoChat = ({
   }, [isRecording]);
 
   useEffect(() => {
-    if (isInterviewStarted && !isRecording && localVideoRef.current?.srcObject && remoteVideoRef.current?.srcObject) {
+    console.log('Recording effect triggered:', {
+      isInterviewStarted,
+      isRecording,
+      hasLocalStream: !!localVideoRef.current?.srcObject,
+      hasRemoteStream: !!remoteVideoRef.current?.srcObject,
+      role,
+      roomId
+    });
+    
+    if (isInterviewStarted && !isRecording && localVideoRef.current?.srcObject) {
+      console.log(`${role}: Starting recording with local stream available, remote stream:`, !!remoteVideoRef.current?.srcObject);
       startRecording();
     } else if (!isInterviewStarted && isRecording) {
+      console.log(`${role}: Stopping recording because interview ended`);
       stopRecording();
     }
   }, [isInterviewStarted, isRecording]);
 
   const uploadChunks = async (chunks, isFinal = false, retryCount = 0) => {
     if (!chunks || chunks.length === 0) {
-      console.warn('No chunks to upload');
+      console.warn(`${role}: No chunks to upload`);
       return;
     }
     
     const blob = new Blob(chunks, { type: 'video/webm' });
     const chunkSizeKB = Math.round(blob.size/1024);
     
-    console.log(`Preparing to upload ${isFinal ? 'FINAL' : 'intermediate'} recording: ${chunkSizeKB}KB`);
+    console.log(`${role}: Preparing to upload ${isFinal ? 'FINAL' : 'intermediate'} recording: ${chunkSizeKB}KB`);
     
     if (blob.size < 1000) { // 1KB minimum
-      console.warn('Blob too small to be a valid recording, skipping upload');
+      console.warn(`${role}: Blob too small to be a valid recording, skipping upload`);
       return;
     }
     
@@ -873,29 +828,41 @@ const VideoChat = ({
       formData.append('partIndex', '0');
       formData.append('totalParts', '1');
       
+      console.log(`${role}: Uploading to server...`);
+      
       const uploadResponse = await fetch('/api/cloudinary/server-upload', {
         method: 'POST',
         body: formData
       });
       
       if (!uploadResponse.ok) {
-        const errorData = await uploadResponse.json();
-        console.error('Server upload error:', errorData);
+        const errorText = await uploadResponse.text();
+        console.error(`${role}: Server upload error:`, uploadResponse.status, errorText);
+        
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch (parseErr) {
+          errorData = { error: 'Invalid response format', message: errorText };
+        }
+        
         throw new Error(`Upload failed: ${errorData.error || 'Unknown error'} - ${errorData.message || ''}`);
       }
       
       const uploadResult = await uploadResponse.json();
       
       if (uploadResult.intermediate) {
-        console.log('Server acknowledged intermediate upload');
+        console.log(`${role}: Server acknowledged intermediate upload`);
         setUploadStatus('');
         return;
       }
       
-      console.log('Upload successful:', uploadResult.url, `(${Math.round(uploadResult.bytes/1024)}KB)`);
+      console.log(`${role}: Upload successful:`, uploadResult.url, `(${Math.round(uploadResult.bytes/1024)}KB)`);
       
       if (isFinal) {
         setUploadStatus('upload_complete');
+        
+        console.log(`${role}: Emitting upload:status complete to room ${roomId}`);
         socketService.socket.emit('upload:status', {
           roomId,
           role,
@@ -905,11 +872,10 @@ const VideoChat = ({
           displayName: uploadResult.displayName
         });
         
-        // For larger videos, add more delay before fetching recordings
         const fileSize = Math.round(uploadResult.bytes/1024/1024); 
         const delayTime = Math.min(Math.max(fileSize * 200, 2000), 10000); // 200ms per mb
         
-        console.log(`Large video detected (${fileSize}MB). Waiting ${delayTime}ms before fetching recordings...`);
+        console.log(`${role}: Large video detected (${fileSize}MB). Waiting ${delayTime}ms before fetching recordings...`);
         setUploadStatus('processing_recordings');
         
         setTimeout(() => {
@@ -919,10 +885,10 @@ const VideoChat = ({
         setUploadStatus('');
       }
     } catch (error) {
-      console.error('Error uploading to server:', error);
+      console.error(`${role}: Error uploading to server:`, error);
       
       if (retryCount < 3) {
-        console.log(`Retrying upload (attempt ${retryCount + 1} of 3)...`);
+        console.log(`${role}: Retrying upload (attempt ${retryCount + 1} of 3)...`);
         setUploadStatus(`retrying_upload_${retryCount + 1}`);
         await new Promise(resolve => setTimeout(resolve, 2000));
         return uploadChunks(chunks, isFinal, retryCount + 1);
@@ -930,6 +896,7 @@ const VideoChat = ({
       
       if (isFinal) {
         setUploadStatus('upload_failed');
+        console.log(`${role}: Emitting upload:status failed to room ${roomId}`);
         socketService.socket.emit('upload:status', {
           roomId,
           role,
@@ -949,21 +916,22 @@ const VideoChat = ({
       const localStream = localVideoRef.current?.srcObject;
       const remoteStream = remoteVideoRef.current?.srcObject;
       
-      if (!localStream || !remoteStream) {
-        console.error('Video streams not ready for recording');
+      if (!localStream) {
+        console.error('Local video stream not ready for recording');
+        setUploadStatus('recording_failed');
         return;
       }
+
+      console.log(`Starting recording with local stream: ${!!localStream}, remote stream: ${!!remoteStream}`);
 
       const processedTracks = [];
       
       const localVideoTrack = localStream.getVideoTracks()[0];
-      const remoteVideoTrack = remoteStream.getVideoTracks()[0];
+      const remoteVideoTrack = remoteStream?.getVideoTracks()[0];
       
       if (localVideoTrack) {
         try {
           const canvas = document.createElement('canvas');
-          // reduced resolution here
-
           canvas.width = 320; 
           canvas.height = 240;
           const ctx = canvas.getContext('2d');
@@ -993,7 +961,6 @@ const VideoChat = ({
       if (remoteVideoTrack) {
         try {
           const canvas = document.createElement('canvas');
-          // reduced resolution here
           canvas.width = 320;  
           canvas.height = 240; 
           const ctx = canvas.getContext('2d');
@@ -1018,11 +985,36 @@ const VideoChat = ({
           console.warn('Error processing remote video, using original track', err);
           processedTracks.push(remoteVideoTrack);
         }
+      } else {
+        console.warn('Remote video track not available, recording with local stream only');
+        
+        try {
+          const placeholderCanvas = document.createElement('canvas');
+          placeholderCanvas.width = 320;
+          placeholderCanvas.height = 240;
+          const placeholderCtx = placeholderCanvas.getContext('2d');
+          
+          const drawPlaceholder = () => {
+            placeholderCtx.fillStyle = '#1a1a1a';
+            placeholderCtx.fillRect(0, 0, 320, 240);
+            placeholderCtx.fillStyle = '#666';
+            placeholderCtx.font = '14px Arial';
+            placeholderCtx.textAlign = 'center';
+            placeholderCtx.fillText('Waiting for participant...', 160, 120);
+            requestAnimationFrame(drawPlaceholder);
+          };
+          drawPlaceholder();
+          
+          const placeholderTrack = placeholderCanvas.captureStream(1).getVideoTracks()[0];
+          processedTracks.push(placeholderTrack);
+        } catch (placeholderErr) {
+          console.warn('Error creating placeholder video track:', placeholderErr);
+        }
       }
 
       const audioTracks = [
         ...localStream.getAudioTracks(),
-        ...remoteStream.getAudioTracks()
+        ...(remoteStream?.getAudioTracks() || [])
       ];
       
       const combinedStream = new MediaStream([
@@ -1036,7 +1028,6 @@ const VideoChat = ({
         mimeType: 'video/webm;codecs=vp9',
         videoBitsPerSecond: 150000,  // 150kbps
         audioBitsPerSecond: 24000    // 24kbps
-        // probably try higher bitrates later. 
       });
       
       console.log('MediaRecorder created with mimeType:', recorder.mimeType);
@@ -1055,10 +1046,6 @@ const VideoChat = ({
           
           const currentTime = Date.now();
           if (totalSize > 5 * 1024 * 1024 && (currentTime - lastUploadTime > UPLOAD_INTERVAL)) {
-            // as for now, intermediate chunks only goes to the nextjs api endpoint
-            // the nextjs server will upload the chunks to cloudinary when interview finished
-            // for future updates, upload in chunks is needed
-            // check if there's a built in function for this from cloudinary
             console.log('Uploading intermediate recording...');
             
             const chunksToUpload = [...recordedChunksRef.current];
@@ -1071,7 +1058,7 @@ const VideoChat = ({
       };
       
       recorder.start(5000);
-      console.log('Recording started');
+      console.log('Recording started successfully');
       
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
@@ -1085,12 +1072,12 @@ const VideoChat = ({
   const stopRecording = () => {
     const recorder = mediaRecorderRef.current;
     if (!recorder || !isRecording) {
-      console.warn('No active recorder to stop');
+      console.warn(`${role}: No active recorder to stop`);
       return;
     }
     
     try {
-      console.log('Stopping recording...');
+      console.log(`${role}: Stopping recording...`);
       
       recorder.stop();
       setIsRecording(false);
@@ -1101,10 +1088,10 @@ const VideoChat = ({
         const chunkCount = finalChunks.length;
         const totalSize = finalChunks.reduce((size, chunk) => size + chunk.size, 0);
         
-        console.log(`Preparing final upload with ${chunkCount} chunks, total size: ${Math.round(totalSize/1024)}KB`);
+        console.log(`${role}: Preparing final upload with ${chunkCount} chunks, total size: ${Math.round(totalSize/1024)}KB`);
         
         if (chunkCount === 0 || totalSize < 1000) {
-          console.error('No valid recording data collected');
+          console.error(`${role}: No valid recording data collected`);
           setUploadStatus('recording_failed');
           return;
         }
@@ -1115,7 +1102,7 @@ const VideoChat = ({
       }, 1000);
       
     } catch (error) {
-      console.error('Error stopping recording:', error);
+      console.error(`${role}: Error stopping recording:`, error);
       setUploadStatus('recording_failed');
     }
   };
@@ -1143,7 +1130,7 @@ const VideoChat = ({
         setUploadStatus('processing_recordings');
         
         const timer = setTimeout(() => {
-          fetchRecordings(0); // Start with retry count 0
+          fetchRecordings(0);
         }, 5000); 
         
         return () => clearTimeout(timer);
@@ -1225,29 +1212,8 @@ const VideoChat = ({
         {!isInterviewStarted && recordings.local && (
           <div className="flex items-center mx-4 gap-4">
             <button
-              onClick={() => setIsAutoMuteEnabled(!isAutoMuteEnabled)}
-              className={`flex items-center gap-2 px-3 py-1 rounded-md transition-colors ${
-                isAutoMuteEnabled 
-                  ? 'bg-green-100 hover:bg-green-200 text-green-700' 
-                  : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 6H3"/>
-                <path d="M15 12H3"/>
-                <path d="M17 18H3"/>
-                <path d="M17 6l4 6-4 6"/>
-              </svg>
-              <span className="text-sm">Auto-Mute: {isAutoMuteEnabled ? 'On' : 'Off'}</span>
-            </button>
-            <button
-              onClick={() => {
-                setIsRecordingsMuted(!isRecordingsMuted);
-                if (remoteVideoRef.current) {
-                  remoteVideoRef.current.muted = !isRecordingsMuted;
-                }
-              }}
-              className="flex items-center gap-2 px-3 py-1 rounded-md bg-gray-100 hover:bg-gray-200 transition-colors"
+              onClick={handleMuteToggle}
+              className={`flex items-center gap-2 px-3 py-1 rounded-md transition-colors bg-gray-100 hover:bg-gray-200 text-gray-700`}
             >
               {isRecordingsMuted ? (
                 <>

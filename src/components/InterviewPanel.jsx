@@ -3,7 +3,7 @@ import NotePad from "./NotepadTab"
 import QuestionEditor from "./QuestionEditor"
 import { useState } from "react"
 
-const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, handleTimestampClick, currentTime, archivedNotes, archivedNoteLines, handleSeek, handleLiveUpdate, collaborationService, activeTab, onTabChange }) => {
+const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, handleTimestampClick, currentTime, archivedNotes, archivedNoteLines, handleSeek, handleLiveUpdate, collaborationService, activeTab, onTabChange, onCodeRangeClick }) => {
 
   return (
     <div className="flex flex-col gap-3 overflow-hidden">
@@ -32,6 +32,8 @@ const InterviewerPanel = ({ startTimeRef, roomState, endTimeRef, notepadRef, han
             initialNoteLines={archivedNoteLines}
             onSeek={handleSeek}
             onLiveUpdate={handleLiveUpdate}
+            onCodeRangeClick={onCodeRangeClick}
+            userRole="interviewer"
           />
         </TabsContent>
       </Tabs>

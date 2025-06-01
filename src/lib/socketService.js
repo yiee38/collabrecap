@@ -56,6 +56,37 @@ class SocketService {
     this.socket.emit('note:add', { note, lineNumbers });
   }
 
+  pushInterviewerNote(note, lineNumbers) {
+    if (!this.socket?.connected) {
+      console.error('Socket not connected');
+      return;
+    }
+    console.log('pushInterviewerNote:', note, lineNumbers);
+    this.socket.emit('interviewer:note:add', { note, lineNumbers });
+  }
+
+  pushIntervieweeNote(note, lineNumbers) {
+    if (!this.socket?.connected) {
+      console.error('Socket not connected');
+      return;
+    }
+    console.log('pushIntervieweeNote:', note, lineNumbers);
+    this.socket.emit('interviewee:note:add', { note, lineNumbers });
+  }
+
+  shareMuteState(roomId, isMuted, userId) {
+    if (!this.socket?.connected) {
+      console.error('Socket not connected');
+      return;
+    }
+    console.log('shareMuteState:', { roomId, isMuted, userId });
+    this.socket.emit('video:mute:sync', { roomId, isMuted, userId });
+  }
+
+  onMuteStateChange(callback) {
+    this.socket?.on('video:mute:receive', callback);
+  }
+
   onRoomStatus(callback) {
     this.socket?.on('room:status', callback);
   }

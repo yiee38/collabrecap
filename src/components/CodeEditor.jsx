@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useImperativeHandle } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { EditorView, Decoration, DecorationSet, ViewPlugin, WidgetType } from '@codemirror/view';
+import { StateField, StateEffect, EditorState } from '@codemirror/state';
 import CollaborationService from '@/lib/collaborationService';
 import { useRouter } from 'next/navigation';
 
@@ -30,6 +31,25 @@ const customStyle = {
   }
 };
 
+const setHighlightRange = StateEffect.define();
+const clearHighlightRange = StateEffect.define();
+
+const highlightRangeField = StateField.define({
+  create() {
+    return null; 
+  },
+  update(range, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setHighlightRange)) {
+        return effect.value; // { from, to }
+      } else if (effect.is(clearHighlightRange)) {
+        return null;
+      }
+    }
+    return range;
+  }
+});
+
 const CodeEditor = ({
   isInterviewActive, 
   interviewStartTime,
@@ -46,12 +66,17 @@ const CodeEditor = ({
   initialContent = '',
   initialOperations = [],
   roomState = 'CREATED',
-}) => {
+  onSelectionChange = () => {},
+  highlightRange = null,
+}, ref) => {
   const [content, setContent] = useState(initialContent);
   const [operations, setOperations] = useState([]);
   const editorRef = useRef(null);
+  const [editorView, setEditorView] = useState(null);
   const collaborationRef = useRef(null);
   const scrollerRef = useRef(null);
+  const [currentSelection, setCurrentSelection] = useState(null);
+  const [preservedHighlight, setPreservedHighlight] = useState(null);
 
   const handleMouseMove = (event) => {
     if (!isInterviewActive || isPlaying || !event.target) return;
@@ -167,6 +192,35 @@ const CodeEditor = ({
     }
   }, [currentTimeOverride]);
 
+  useImperativeHandle(ref, () => ({
+    highlightRange: (range) => {
+      if (editorView && range && typeof range.from === 'number' && typeof range.to === 'number') {
+        editorView.dispatch({
+          effects: setHighlightRange.of(range)
+        });
+        
+        const line = editorView.state.doc.lineAt(range.from);
+        editorView.dispatch({
+          effects: EditorView.scrollIntoView(line.from, {y: 'center'})
+        });
+      }
+    },
+    
+    clearHighlight: () => {
+      if (editorView) {
+        editorView.dispatch({
+          effects: clearHighlightRange.of()
+        });
+      }
+    },
+
+    getCurrentContent: () => {
+      return content;
+    }
+  }));
+  
+
+
   useEffect(() => {
     if (!collaborationRef.current && roomId && userId) {
       collaborationRef.current = new CollaborationService(roomId, userId, role);
@@ -214,6 +268,123 @@ const CodeEditor = ({
       setOperations(filteredOps);
     }
   }, [initialOperations, userId, roomState]);
+
+  useEffect(() => {
+    if (!editorView) return;
+    
+    const handleSelectionChange = () => {
+      try {
+        if (!editorView) return;
+        
+        const selection = editorView.state.selection.main;
+        
+        if (selection.from !== selection.to) {
+          const range = { from: selection.from, to: selection.to };
+          
+          const selectedText = editorView.state.doc.sliceString(range.from, range.to);
+          const selectionWithText = { ...range, text: selectedText };
+          
+          setCurrentSelection(selectionWithText);
+          onSelectionChange(selectionWithText);
+        } else {
+          setCurrentSelection(null);
+          onSelectionChange(null);
+        }
+      } catch (error) {
+        console.error("Error in selection change handler:", error);
+      }
+    };
+    
+    const selectionListener = EditorView.updateListener.of(update => {
+      if (update.selectionSet) {
+        handleSelectionChange();
+      }
+    });
+    
+    editorView.dispatch({
+      effects: StateEffect.appendConfig.of([selectionListener])
+    });
+    
+    return () => {
+      setCurrentSelection(null);
+      
+    };
+  }, [editorView, onSelectionChange]);
+
+  useEffect(() => {
+    if (!editorView) return;
+
+    try {
+      if (highlightRange === null || highlightRange === undefined) {
+        setPreservedHighlight(null);
+        editorView.dispatch({
+          effects: clearHighlightRange.of()
+        });
+        return;
+      }
+      
+      const docLength = editorView.state.doc.length;
+      
+      if (highlightRange && 
+          typeof highlightRange.from === 'number' && 
+          typeof highlightRange.to === 'number' &&
+          highlightRange.from >= 0 && 
+          highlightRange.to >= highlightRange.from && 
+          highlightRange.from < docLength) {
+        
+        const safeToPosition = Math.min(highlightRange.to, docLength);
+        const safeRange = {
+          from: highlightRange.from,
+          to: safeToPosition
+        };
+        
+        setPreservedHighlight(safeRange);
+        
+        editorView.dispatch({
+          effects: setHighlightRange.of(safeRange)
+        });
+        
+        try {
+          if (docLength > 0) {
+            const line = editorView.state.doc.lineAt(highlightRange.from);
+            editorView.dispatch({
+              effects: EditorView.scrollIntoView(line.from, {y: 'center'})
+            });
+          }
+        } catch (scrollError) {
+          console.error("Error scrolling to highlight:", scrollError);
+        }
+      } else {
+        setPreservedHighlight(null);
+        editorView.dispatch({
+          effects: clearHighlightRange.of()
+        });
+      }
+    } catch (error) {
+      console.error("Error in highlight useEffect:", error);
+      try {
+        setPreservedHighlight(null);
+        editorView.dispatch({
+          effects: clearHighlightRange.of()
+        });
+      } catch (clearError) {
+        console.error("Error clearing highlight:", clearError);
+      }
+    }
+  }, [highlightRange, editorView]);
+
+  useEffect(() => {
+    if (editorView && preservedHighlight) {
+      try {
+        console.log("Restoring preserved highlight:", preservedHighlight);
+        editorView.dispatch({
+          effects: setHighlightRange.of(preservedHighlight)
+        });
+      } catch (error) {
+        console.error("Error restoring preserved highlight:", error);
+      }
+    }
+  }, [editorView, preservedHighlight]);
 
   const scrollHander = (view) => {
     const currentScroll = scrollerRef.current?.scrollTop || 0;
@@ -334,6 +505,49 @@ const CodeEditor = ({
     });
   };
 
+  const createRangeHighlightPlugin = () => {
+    return ViewPlugin.fromClass(
+      class {
+        constructor(view) {
+          this.decorations = this.createDecorations(view);
+        }
+
+        update(update) {
+          if (update.docChanged || 
+              update.viewportChanged || 
+              update.selectionSet || 
+              update.transactions.some(tr => 
+                tr.effects.some(e => 
+                  e.is(setHighlightRange) || 
+                  e.is(clearHighlightRange)
+                )
+              )) {
+            this.decorations = this.createDecorations(update.view);
+          }
+        }
+
+        createDecorations(view) {
+          const highlightRange = view.state.field(highlightRangeField);
+          
+          if (!highlightRange) return Decoration.none;
+
+          const decorations = [];
+
+          decorations.push(
+            Decoration.mark({
+              class: "cm-highlighted-range",
+            }).range(highlightRange.from, highlightRange.to)
+          );
+
+          return Decoration.set(decorations);
+        }
+      },
+      {
+        decorations: v => v.decorations
+      }
+    );
+  };
+
   return (
     <div className="w-[500px] mx-auto p-4 border border-gray-200 rounded-lg bg-white">
       <div className="border border-gray-200 rounded-md overflow-hidden mt-4 mb-4">
@@ -345,12 +559,27 @@ const CodeEditor = ({
           theme="dark"
           extensions={[
             javascript(), 
-            wrapStyle, 
+            wrapStyle,
+            highlightRangeField, 
+            createRangeHighlightPlugin(),
             createRemotePointersPlugin(),
+            EditorView.theme({
+              ".cm-highlighted-range": {
+                backgroundColor: "#f3e8ff",
+                border: "1px solid #c084fc"
+              }
+            }),
             ...(isInterviewActive && !isPlaying ? 
                 (collaborationRef.current?.getExtensions() || []) : [])
           ]}
           onChange={handleChange}
+          onCreateEditor={(view) => {
+            setEditorView(view);
+    
+            view.dispatch({
+              effects: clearHighlightRange.of()
+            });
+          }}
           editable={isInterviewActive && !isPlaying}
           basicSetup={{
             lineNumbers: true,

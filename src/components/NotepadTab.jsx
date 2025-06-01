@@ -3,6 +3,7 @@ import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 import { FaLink } from 'react-icons/fa';
 import { FaUnlink } from "react-icons/fa";
+import { FaCode } from 'react-icons/fa';
 import { socketService } from '@/lib/socketService';
 import WarningDialog from './WarningDialog';
 import Quill from 'quill';
@@ -27,12 +28,47 @@ class CustomTimestampBlot extends Quill.import('blots/inline') {
 CustomTimestampBlot.blotName = 'timestamp';
 CustomTimestampBlot.tagName = 'span';
 
-if (typeof window !== 'undefined') {  
-  Quill.register(CustomTimestampBlot);
+class CodeLinkBlot extends Quill.import('blots/inline') {
+  static create(value) {
+    const node = super.create();
+    node.setAttribute('data-coderange', JSON.stringify(value.codeRange));
+    node.setAttribute('contenteditable', 'false');
+    node.classList.add('code-link');
+    if (value.codeRange.text) {
+      node.setAttribute('title', value.codeRange.text.substring(0, 100));
+    }
+    return node;
+  }
+
+  static value(node) {
+    return {
+      codeRange: JSON.parse(node.getAttribute('data-coderange') || '{}')
+    };
+  }
 }
 
-const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, formatTime, paddingTop, onTimestampClick }) => {
-  const getColor = (isLinked, state) => {
+CodeLinkBlot.blotName = 'codelink';
+CodeLinkBlot.tagName = 'span';
+
+if (typeof window !== 'undefined') {  
+  Quill.register(CustomTimestampBlot);
+  Quill.register(CodeLinkBlot);
+}
+
+const LineNumber = ({ 
+  line, 
+  isHovering, 
+  setIsHovering, 
+  roomState, 
+  onClick, 
+  formatTime, 
+  paddingTop, 
+  onTimestampClick,
+  onCodeRangeClick = () => {}
+}) => {
+  const getColor = (isLinked, state, hasCodeRange) => {
+    if (hasCodeRange) return '#8b5cf6'; 
+    
     switch (state) {
       case 'ACTIVE':
         return isLinked ? '#dc2626' : '#22c55e';
@@ -47,7 +83,7 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
     height: '18.45px',
     margin: line.paddingTop ? `${line.paddingTop}px 0 0` : 0,
     fontFamily: 'monospace',
-    color: getColor(line.linked, roomState),
+    color: getColor(line.linked, roomState, line.codeRange),
     paddingTop: `${paddingTop}px`,
     lineHeight: '18.45px',
     display: 'flex',
@@ -56,11 +92,31 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
   };
 
   const handleClick = () => {
-    if (roomState === 'ARCHIVED' && line.time) {
-      onTimestampClick(line.time);
+    if (roomState === 'ARCHIVED') {
+      if (line.codeRange && line.codeRange !== null) {
+        onCodeRangeClick(line.codeRange, line.time);
+        return;
+      }
+      
+      if (line.time && line.time !== null) {
+        onTimestampClick(line.time);
+        return;
+      }
     } else {
       onClick(line);
     }
+  };
+
+  const renderHoverIcon = () => {
+    if (line.codeRange) {
+      return <FaCode style={{ cursor: 'pointer', color: '#8b5cf6' }} />;
+    }
+    
+    if (line.linked) {
+      return <FaUnlink style={{ cursor: 'pointer', color: roomState === 'ACTIVE' ? '#dc2626' : '#2563eb' }} />;
+    }
+    
+    return <FaLink style={{ cursor: 'pointer', color: '#22c55e' }} />;
   };
 
   switch (roomState) {
@@ -73,23 +129,28 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
           onMouseLeave={() => setIsHovering(null)}
         >
           {isHovering === line.number 
-            ? (line.linked 
-                ? <FaUnlink style={{ cursor: 'pointer', color: '#dc2626' }} />  
-                : <FaLink style={{ cursor: 'pointer', color: '#22c55e' }} />)
-            : line.number
-          }
+            ? (line.time ? formatTime(line.time) : renderHoverIcon())
+            : line.number}
         </div>
       );
 
     case 'ARCHIVED':
       return (
         <div 
-          style={{...style, cursor: line.time ? 'pointer' : 'default'}}
+          style={{...style, cursor: (line.time || line.codeRange) ? 'pointer' : 'default'}}
           onMouseEnter={() => setIsHovering(line.number)}
           onMouseLeave={() => setIsHovering(null)}
           onClick={handleClick}
         >
-          {isHovering === line.number && line.time ? formatTime(line.time) : line.number}
+          {isHovering === line.number 
+            ? (line.time 
+              ? (line.codeRange 
+                 ? <span title="Click to view linked code and jump to timestamp">
+                     {formatTime(line.time)}
+                   </span>
+                 : <span title="Click to jump to timestamp">{formatTime(line.time)}</span>)
+              : line.number)
+            : line.number}
         </div>
       );
 
@@ -98,7 +159,18 @@ const LineNumber = ({ line, isHovering, setIsHovering, roomState, onClick, forma
   }
 };
 
-const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, currentTime, initialContent, initialNoteLines, onLiveUpdate }) => {
+const TimestampNotepad = ({ 
+  baseTimeRef, 
+  roomState, 
+  ref, 
+  onTimestampClick, 
+  currentTime, 
+  initialContent, 
+  initialNoteLines, 
+  onLiveUpdate,
+  onCodeRangeClick = () => {},
+  userRole = 'interviewer' 
+}) => {
   const [lineNumbers, setLineNumbers] = useState([]);
   const quillRef = useRef(null);
   const [value, setValue] = useState('');
@@ -111,8 +183,10 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
   const [isWarningOpen, setIsWarningOpen] = useState(false);
   const [pendingLinkLine, setPendingLinkLine] = useState(null);
   const [warningMessage, setWarningMessage] = useState('');
+  const [pendingCodeLink, setPendingCodeLink] = useState(null);
   const roomStateRef = useRef(roomState);
   const currentTimeRef = useRef(currentTime);
+  const lastCursorPositionRef = useRef(null);
 
   useImperativeHandle(ref, () => ({
     setManualTimestamp: () => {
@@ -133,6 +207,27 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
             return;
           }
           
+          let timelinePosition;
+          
+          if (roomStateRef.current === 'CREATED') {
+            timelinePosition = 0;
+          } else if (roomStateRef.current === 'ARCHIVED') {
+            if (baseTimeRef.current !== undefined && baseTimeRef.current !== null) {
+              timelinePosition = baseTimeRef.current + currentTimeRef.current;
+            } else {
+              timelinePosition = Date.now();
+            }
+          } else {
+            timelinePosition = Date.now();
+          }
+          
+          if (timelinePosition <= 0 && roomStateRef.current !== 'CREATED') {
+            timelinePosition = Date.now();
+          }
+          
+          currentLine.setAttribute('data-timestamp', timelinePosition.toString());
+          currentLine.setAttribute('data-linked', 'true');
+          
           const content = currentLine.textContent;
           if (!content.trim()) {
             quillEditor.insertText(selection.index, `Added timestamp #${lineNumbers.length + 1})`);
@@ -145,6 +240,27 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
         const lastLine = leaf?.parent?.domNode;
         
         if (lastLine) {
+          let timelinePosition;
+          
+          if (roomStateRef.current === 'CREATED') {
+            timelinePosition = 0;
+          } else if (roomStateRef.current === 'ARCHIVED') {
+            if (baseTimeRef.current !== undefined && baseTimeRef.current !== null) {
+              timelinePosition = baseTimeRef.current + currentTimeRef.current;
+            } else {
+              timelinePosition = Date.now();
+            }
+          } else {
+            timelinePosition = Date.now();
+          }
+          
+          if (timelinePosition <= 0 && roomStateRef.current !== 'CREATED') {
+            timelinePosition = Date.now();
+          }
+          
+          lastLine.setAttribute('data-timestamp', timelinePosition.toString());
+          lastLine.setAttribute('data-linked', 'true');
+          
           const content = lastLine.textContent;
           if (!content.trim()) {
             quillEditor.insertText(lastIndex, `Added timestamp #${lineNumbers.length + 1})`);
@@ -155,8 +271,170 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
           handleTextUpdate(null, null, 'user');
         }
       }
+    },
+
+    attachCodeRange: (codeRange) => {
+      if (!quillRef.current || !codeRange || typeof codeRange.from !== 'number' || typeof codeRange.to !== 'number') {
+        return false; 
+      }
+      
+      if (codeRange.from < 0 || codeRange.to < codeRange.from) {
+        console.warn("Invalid code range values:", codeRange);
+        return false;
+      }
+      
+      if (!codeRange.text) {
+        if (codeRange.contentSnapshot && typeof codeRange.from === 'number' && typeof codeRange.to === 'number') {
+          try {
+            codeRange.text = codeRange.contentSnapshot.slice(codeRange.from, codeRange.to);
+          } catch (e) {
+            console.warn("Could not extract text from snapshot:", e);
+            codeRange.text = "Unknown code selection";
+          }
+        } else {
+          codeRange.text = "Unknown code selection";
+        }
+      }
+      
+      const quillEditor = quillRef.current.getEditor();
+      let selection = quillEditor.getSelection();
+      
+      if (!selection && lastCursorPositionRef.current) {
+        selection = lastCursorPositionRef.current;
+        quillEditor.setSelection(selection);
+      }
+      
+      if (!selection) {
+        const lastIndex = quillEditor.getLength() - 1;
+        selection = { index: lastIndex, length: 0 };
+        quillEditor.setSelection(selection);
+      } 
+      
+      try {
+        const [leaf] = quillEditor.getLeaf(selection.index);
+        const currentLine = leaf?.parent?.domNode;
+        
+        if (currentLine) {
+          const existingCodeRange = currentLine.getAttribute('data-coderange');
+          if (existingCodeRange) {
+            try {
+              const existingRange = JSON.parse(existingCodeRange);
+              
+              setPendingCodeLink({
+                currentLine,
+                codeRange,
+                existingRange,
+                isEmpty: (currentLine.textContent || '').trim() === ''
+              });
+              setWarningMessage("Do you want to link this line to a new segment of code?");
+              setIsWarningOpen(true);
+              return true; 
+            } catch (e) {
+              console.warn("Error parsing existing code range, proceeding with replacement:", e);
+            }
+          }
+          
+          return performCodeLink(currentLine, codeRange, (currentLine.textContent || '').trim() === '');
+        } else {
+          const codePreview = codeRange.text ? 
+            (codeRange.text.length > 30 ? 
+              codeRange.text.substring(0, 30) + '...' : 
+              codeRange.text) : 
+            'Selected code';
+          
+          const onTextChangeOnce = function(delta, oldContents, source) {
+            quillEditor.off('text-change', onTextChangeOnce);
+            handleTextUpdate(null, null, 'user');
+          };
+          
+          quillEditor.on('text-change', onTextChangeOnce);
+          
+          quillEditor.insertText(selection.index, `Code: "${codePreview}"`, {
+            'code-link': { codeRange }
+          });
+          
+          return true;
+        }
+      } catch (error) {
+        console.error("Error in attachCodeRange:", error);
+        return false;
+      }
     }
   }), [lineNumbers.length]);
+
+  const performCodeLink = (currentLine, codeRange, isEmpty) => {
+    const quillEditor = quillRef.current.getEditor();
+    
+    currentLine.setAttribute('data-coderange', JSON.stringify(codeRange));
+    
+    let timelinePosition;
+    
+    if (roomStateRef.current === 'CREATED') {
+      timelinePosition = 0;
+    } else if (roomStateRef.current === 'ARCHIVED') {
+      if (baseTimeRef.current !== undefined && baseTimeRef.current !== null) {
+        timelinePosition = baseTimeRef.current + currentTimeRef.current;
+      } else {
+        timelinePosition = Date.now();
+      }
+    } else {
+      timelinePosition = Date.now();
+    }
+    
+    if (timelinePosition <= 0 && roomStateRef.current !== 'CREATED') {
+      timelinePosition = Date.now();
+    }
+    
+    console.log(`Setting timestamp for code link in ${roomStateRef.current} mode: ${timelinePosition}`);
+    currentLine.setAttribute('data-timestamp', timelinePosition.toString());
+    currentLine.setAttribute('data-linked', 'true');
+    
+    if (!currentLine.classList.contains('code-link')) {
+      currentLine.classList.add('code-link');
+    }
+    
+    if (isEmpty) {
+      const lineRef = currentLine;
+      const codeRangeData = codeRange;
+      
+      const onTextChangeOnce = function(delta, oldContents, source) {
+        quillEditor.off('text-change', onTextChangeOnce);
+        
+        if (lineRef && !lineRef.classList.contains('code-link')) {
+          lineRef.classList.add('code-link');
+          lineRef.setAttribute('data-coderange', JSON.stringify(codeRangeData));
+        }
+        
+        handleTextUpdate(null, null, 'user');
+      };
+      
+      quillEditor.on('text-change', onTextChangeOnce);
+      
+      const selection = quillEditor.getSelection();
+      quillEditor.insertText(selection?.index || quillEditor.getLength() - 1, `Added timestamp #${lineNumbers.length + 1})`);
+    } else {
+      handleTextUpdate(null, null, 'user');
+    }
+    
+    return true;
+  };
+
+  const handleConfirmCodeLink = () => {
+    if (pendingCodeLink) {
+      const { currentLine, codeRange, isEmpty } = pendingCodeLink;
+      performCodeLink(currentLine, codeRange, isEmpty);
+    }
+    
+    setIsWarningOpen(false);
+    setWarningMessage('');
+    setPendingCodeLink(null);
+  };
+
+  const handleCancelCodeLink = () => {
+    setIsWarningOpen(false);
+    setWarningMessage('');
+    setPendingCodeLink(null);
+  };
 
   useEffect(() => {
     roomStateRef.current = roomState;
@@ -190,11 +468,21 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
           const hasContent = content.trim() !== '';
           if (hasContent) {
             line.setAttribute('data-timestamp', initialNoteLines[i]?.time || Date.now().toString());
+            
+            if (initialNoteLines[i]?.codeRange) {
+              line.setAttribute('data-coderange', JSON.stringify(initialNoteLines[i].codeRange));
+              line.classList.add('code-link');
+            } else {
+              line.classList.remove('code-link');
+            }
+            
             line.setAttribute('data-linked', 'true');
           }
           else {
             line?.removeAttribute('data-timestamp');
+            line?.removeAttribute('data-coderange');
             line?.removeAttribute('data-linked');
+            line?.classList.remove('code-link');
           }
         }
       }
@@ -231,13 +519,22 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
       const quillEditor = quillRef.current.getEditor();
       quillEditor.on('text-change', handleTextUpdate);
       
+      quillEditor.on('selection-change', function(range) {
+        if (range) {
+          lastCursorPositionRef.current = range;
+        }
+      });
+      
       quillEditor.root.addEventListener('scroll', () => {
         if (lineNumbersRef.current) {
           lineNumbersRef.current.scrollTop = quillEditor.root.scrollTop;
         }
       });
 
-      return () => quillEditor.off('text-change', handleTextUpdate);
+      return () => {
+        quillEditor.off('text-change', handleTextUpdate);
+        quillEditor.off('selection-change');
+      };
     }
   }, []);
 
@@ -245,6 +542,7 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
     const quillEditor = quillRef.current.getEditor();
     const editorLines = quillEditor.root.children;
     const totalLines = Math.max(editorLines.length, 1);
+    
     if (source !== 'api') {
       const newLineNumbers = [];
 
@@ -257,23 +555,51 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
           number: i + 1,
           height: line?.offsetHeight + 0.45 || basicLineHeight.current,
           content: content,
-          linked: false
+          linked: false,
+          codeRange: null
         };
 
         if (hasContent) {
           let timestamp = line.getAttribute('data-timestamp');
           
           if (!timestamp) {
+            let timelinePosition;
+            
             if (roomStateRef.current === 'CREATED') {
-              timestamp = '0';
+              timelinePosition = 0;
             } else if (roomStateRef.current === 'ARCHIVED') {
-              const timelinePosition = baseTimeRef.current + currentTimeRef.current;
-              timestamp = timelinePosition.toString();
+              if (baseTimeRef.current !== undefined && baseTimeRef.current !== null) {
+                timelinePosition = baseTimeRef.current + currentTimeRef.current;
+              } else {
+                timelinePosition = Date.now();
+              }
             } else {
-              timestamp = Date.now().toString();
+              timelinePosition = Date.now();
             }
+            
+            if (timelinePosition <= 0 && roomStateRef.current !== 'CREATED') {
+              timelinePosition = Date.now();
+            }
+            
+            timestamp = timelinePosition.toString();
             line.setAttribute('data-timestamp', timestamp);
             line.setAttribute('data-linked', 'true');
+          }
+
+          const codeRangeAttr = line.getAttribute('data-coderange');
+          if (codeRangeAttr) {
+            try {
+              lineData.codeRange = JSON.parse(codeRangeAttr);
+              if (!line.classList.contains('code-link')) {
+                line.classList.add('code-link');
+              }
+            } catch (e) {
+              console.error('Error parsing code range:', e);
+              lineData.codeRange = null;
+              line.classList.remove('code-link');
+            }
+          } else {
+            line.classList.remove('code-link');
           }
 
           let parsedTimestamp = parseInt(timestamp);
@@ -281,7 +607,9 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
           lineData.linked = true;
         } else {
           line?.removeAttribute('data-timestamp');
+          line?.removeAttribute('data-coderange');
           line?.removeAttribute('data-linked');
+          line?.classList.remove('code-link');
         }
 
         newLineNumbers.push(lineData);
@@ -290,10 +618,23 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
       if (!socketService.socket?.connected) {
         socketService.connect(process.env.NEXT_PUBLIC_SOCKET_URL);
       }
-      socketService.pushNote(quillEditor.getText(), newLineNumbers);
+      
+      if (userRole === 'interviewer') {
+        socketService.pushInterviewerNote(quillEditor.getText(), newLineNumbers);
+      } else if (userRole === 'interviewee') {
+        socketService.pushIntervieweeNote(quillEditor.getText(), newLineNumbers);
+      }
+      
       setLineNumbers(newLineNumbers);
       console.log("LIVE UPDATE!!")  
       onLiveUpdate(quillEditor.getText(), newLineNumbers);
+      
+      setTimeout(() => {
+        const currentSelection = quillEditor.getSelection();
+        if (currentSelection) {
+          lastCursorPositionRef.current = currentSelection;
+        }
+      }, 0);
     }
   };
 
@@ -339,6 +680,12 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
         handleTextUpdate(null, null, 'user');
       }
     }
+    
+    if (pendingCodeLink) {
+      handleConfirmCodeLink();
+      return;
+    }
+    
     setIsWarningOpen(false);
     setWarningMessage('');
     setPendingLinkLine(null);
@@ -374,6 +721,7 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
                 formatTime={formatTime}
                 paddingTop={paddingTop}
                 onTimestampClick={onTimestampClick}
+                onCodeRangeClick={onCodeRangeClick}
                 onMouseEnter={() => setIsHovering(true)}
                 onMouseLeave={() => setIsHovering(false)}
               />)
@@ -390,6 +738,13 @@ const TimestampNotepad = ({ baseTimeRef, roomState, ref, onTimestampClick, curre
             className="h-full border border-black overflow-x-hidden break-words whitespace-pre-wrap"
           />
         </div>
+        <style jsx global>{`
+          .code-link {
+            background-color: #f3e8ff;
+            border-bottom: 1px dashed #8b5cf6;
+            padding: 0 2px;
+          }
+        `}</style>
         <WarningDialog 
           isOpen={isWarningOpen}
           onClose={() => setIsWarningOpen(false)}

@@ -26,6 +26,7 @@ class CollaborationService {
     this.yText = this.doc.getText('codemirror');
     this.yState = this.doc.getMap('interviewState');
     this.yTimeline = this.doc.getMap('timeline');
+    this.yHighlights = this.doc.getMap('codeHighlights');
 
     this.doc.transact(() => {
       if (!this.yState.get('status')) {
@@ -60,6 +61,15 @@ class CollaborationService {
       }
       if (!this.yState.get('replayController')) {
         this.yState.set('replayController', null);
+      }
+      if (!this.yHighlights.get('currentHighlight')) {
+        this.yHighlights.set('currentHighlight', null);
+      }
+      if (!this.yHighlights.get('highlightedBy')) {
+        this.yHighlights.set('highlightedBy', null);
+      }
+      if (!this.yHighlights.get('highlightTimestamp')) {
+        this.yHighlights.set('highlightTimestamp', null);
       }
     });
     
@@ -412,6 +422,83 @@ class CollaborationService {
     this.awareness.destroy();
     this.provider.destroy();
     this.doc.destroy();
+  }
+
+  shareCodeHighlight(range, timestamp = null) {
+    if (!range || typeof range.from !== 'number' || typeof range.to !== 'number') {
+      console.warn('Invalid range provided to shareCodeHighlight:', range);
+      return false;
+    }
+
+    console.log(`${this.role} sharing highlight:`, { range, timestamp });
+    
+    this.doc.transact(() => {
+      this.yHighlights.set('currentHighlight', {
+        from: range.from,
+        to: range.to,
+        text: range.text || ''
+      });
+      this.yHighlights.set('highlightedBy', this.userId);
+      this.yHighlights.set('highlightTimestamp', timestamp);
+      this.yHighlights.set('lastUpdate', Date.now());
+    });
+    
+    return true;
+  }
+
+  clearCodeHighlight() {
+    console.log(`${this.role} clearing highlight`);
+    
+    this.doc.transact(() => {
+      this.yHighlights.set('currentHighlight', null);
+      this.yHighlights.set('highlightedBy', this.userId);
+      this.yHighlights.set('highlightTimestamp', null);
+      this.yHighlights.set('lastUpdate', Date.now());
+    });
+  }
+
+  onHighlightChange(callback) {
+    let lastHighlight = {
+      currentHighlight: this.yHighlights.get('currentHighlight'),
+      highlightedBy: this.yHighlights.get('highlightedBy'),
+      highlightTimestamp: this.yHighlights.get('highlightTimestamp'),
+      lastUpdate: this.yHighlights.get('lastUpdate')
+    };
+
+    this.yHighlights.observe(() => {
+      const currentHighlight = this.yHighlights.get('currentHighlight');
+      const highlightedBy = this.yHighlights.get('highlightedBy');
+      const highlightTimestamp = this.yHighlights.get('highlightTimestamp');
+      const lastUpdate = this.yHighlights.get('lastUpdate');
+      
+      if ((currentHighlight !== lastHighlight.currentHighlight || 
+          highlightTimestamp !== lastHighlight.highlightTimestamp ||
+          lastUpdate !== lastHighlight.lastUpdate) &&
+          highlightedBy !== this.userId) {
+        
+        lastHighlight = { currentHighlight, highlightedBy, highlightTimestamp, lastUpdate };
+        
+        console.log(`Received highlight change from ${highlightedBy}:`, {
+          highlight: currentHighlight,
+          timestamp: highlightTimestamp
+        });
+        
+        callback({
+          range: currentHighlight,
+          timestamp: highlightTimestamp,
+          fromUser: highlightedBy,
+          action: currentHighlight ? 'highlight' : 'clear'
+        });
+      }
+    });
+  }
+
+  getCurrentHighlight() {
+    return {
+      range: this.yHighlights.get('currentHighlight'),
+      highlightedBy: this.yHighlights.get('highlightedBy'),
+      timestamp: this.yHighlights.get('highlightTimestamp')
+    };
   }
 }
 

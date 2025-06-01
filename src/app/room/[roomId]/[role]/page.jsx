@@ -1,18 +1,17 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { debounce } from 'lodash';
 import { useParams, useRouter } from 'next/navigation';
 import { socketService } from '@/lib/socketService';
 import CodeEditor from '@/components/CodeEditor';
 import VideoChat from '@/components/VideoChat';
 import Timeline from '@/components/Timeline';
-import NotePad from '@/components/Notepad';
 import CollaborationService from '@/lib/collaborationService';
 import { Button } from '@/components/ui/button';
 import { useSession, signIn } from "next-auth/react";
 import { getArchivedRoom } from '@/lib/apiAgent';
 import InterviewerPanel from '@/components/InterviewPanel';
+import IntervieweePanel from '@/components/IntervieweePanel';
 import QuestionEditor from '@/components/QuestionEditor';
 
 const INTERVAL_MS = 50;
@@ -45,12 +44,23 @@ const InterviewRoom = () => {
   const [archivedNotes, setArchivedNotes] = useState('');
   const [archivedNoteLines, setArchivedNoteLines] = useState([]);
   const [archivedQuestionContent, setArchivedQuestionContent] = useState('');
+  const [intervieweeNotes, setIntervieweeNotes] = useState('');
+  const [intervieweeNoteLines, setIntervieweeNoteLines] = useState([]);
   const [activeTab, setActiveTab] = useState('question');
   const [isCollaborationReady, setIsCollaborationReady] = useState(false);
+  const codeEditorRef = useRef(null);
+
+  const [selectedRange, setSelectedRange] = useState(null);
+  const [highlightRange, setHighlightRange] = useState(null);
+
   
   useEffect(() => {
     console.log("Operations state in room:", operations);
   }, [operations]);
+
+  useEffect(() => {
+    console.log("Selected range:", selectedRange);
+  }, [selectedRange]);
   
   const startTimeRef = useRef(null);
   const endTimeRef = useRef(null);
@@ -58,6 +68,7 @@ const InterviewRoom = () => {
   const collaborationRef = useRef(null);
   const lastUpdateRef = useRef(null);
   const notepadRef = useRef(null);
+  const intervieweeNotepadRef = useRef(null);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -192,8 +203,15 @@ const InterviewRoom = () => {
             const archivedOperations = room.codeOperations || [];
             console.log("Archived operations from server:", archivedOperations.length);
             setOperations(archivedOperations);
-            setArchivedNotes(room.noteContent || '');
-            setArchivedNoteLines(room.noteLines || []);
+            
+            if (role === 'interviewer') {
+              setArchivedNotes(room.noteContent || '');
+              setArchivedNoteLines(room.noteLines || []);
+            } else if (role === 'interviewee') {
+              setIntervieweeNotes(room.intervieweeNoteContent || '');
+              setIntervieweeNoteLines(room.intervieweeNoteLines || []);
+            }
+            
             setArchivedQuestionContent(room.questionContent || '');
           } catch (err) {
             if (err?.response?.status !== 404) {
@@ -203,6 +221,33 @@ const InterviewRoom = () => {
 
           if (!collaborationRef.current) {
             collaborationRef.current = new CollaborationService(roomId, session.user.email, role);
+
+            collaborationRef.current.onHighlightChange(({ range, timestamp, fromUser, action }) => {
+              console.log(`Received highlight from ${fromUser}:`, { action, range, timestamp });
+              
+              if (action === 'highlight' && range) {
+                setHighlightRange(range);
+                if (codeEditorRef.current && codeEditorRef.current.highlightRange) {
+                  codeEditorRef.current.highlightRange(range);
+                }
+                
+                if (timestamp && timestamp !== null) {
+                  const newTime = timestamp - startTimeRef.current;
+                  setCurrentTime(newTime);
+                  
+                  if (collaborationRef.current?.doc) {
+                    collaborationRef.current.doc.transact(() => {
+                      collaborationRef.current.yTimeline.set('currentTime', newTime);
+                    });
+                  }
+                }
+              } else if (action === 'clear') {
+                setHighlightRange(null);
+                if (codeEditorRef.current && codeEditorRef.current.clearHighlight) {
+                  codeEditorRef.current.clearHighlight();
+                }
+              }
+            });
             
             collaborationRef.current.onTimelineUpdate(({ currentTime, controlledBy, isPlaying, isSeeking, seekingUser }) => {
               if (controlledBy !== session.user.email) {
@@ -254,6 +299,17 @@ const InterviewRoom = () => {
                         collaborationRef.current.yState.set('operationsInitializer', session.user.email);
                       }
                     }, 1000);
+                  }
+                }
+              }
+
+              if (status === 'connected' && collaborationRef.current) {
+                const currentHighlight = collaborationRef.current.getCurrentHighlight();
+                if (currentHighlight.range && currentHighlight.highlightedBy !== session?.user?.email) {
+                  console.log('Loading existing highlight from:', currentHighlight.highlightedBy);
+                  setHighlightRange(currentHighlight.range);
+                  if (codeEditorRef.current && codeEditorRef.current.highlightRange) {
+                    codeEditorRef.current.highlightRange(currentHighlight.range);
                   }
                 }
               }
@@ -323,6 +379,8 @@ const InterviewRoom = () => {
           setArchivedNotes('');
           setArchivedNoteLines([]);
           setArchivedQuestionContent('');
+          setIntervieweeNotes('');
+          setIntervieweeNoteLines([]);
           setIsCollaborationReady(false);
         };
         
@@ -345,6 +403,14 @@ const InterviewRoom = () => {
     console.log("LIVE UPDATE!!")
     setArchivedNotes(text);
     setArchivedNoteLines(lines);
+    
+  }
+
+  const handleIntervieweeLiveUpdate = (text, lines) => {
+    console.log("INTERVIEWEE LIVE UPDATE!!")
+    setIntervieweeNotes(text);
+    setIntervieweeNoteLines(lines);
+    
   }
 
   const startInterview = () => {
@@ -384,12 +450,6 @@ const InterviewRoom = () => {
         questionContent
       });
 
-      socketService.socket.emit('upload:status', {
-        roomId,
-        role,
-        status: 'complete'
-      });
-      
       collaborationRef.current?.releaseTimelineControl();
     }
   };
@@ -489,7 +549,129 @@ const InterviewRoom = () => {
     };
   }, [isPlaying, duration, session?.user?.email]);
 
+  const handleCodeRangeClick = (range, timestamp = null) => {
+    if (roomState !== 'ARCHIVED' || !range) return;
+    
+    try {
+      if (isPlaying) {
+        setIsPlaying(false);
+        if (playIntervalRef.current) {
+          clearInterval(playIntervalRef.current);
+          playIntervalRef.current = null;
+        }
+        
+        if (collaborationRef.current?.doc) {
+          collaborationRef.current.doc.transact(() => {
+            collaborationRef.current.yTimeline.set('isPlaying', false);
+            collaborationRef.current.yTimeline.set('playbackController', null);
+            collaborationRef.current.yState.set('operationApplier', null);
+          });
+        }
+      }
+      
+      const cleanRange = {
+        from: range.from,
+        to: range.to || range.from + (range.text?.length || 1),
+        text: range.text || "Selected code"
+      };
+      
+      if (timestamp && timestamp !== null) {
+        const newTime = timestamp - startTimeRef.current;
+        setCurrentTime(newTime);
+        
+        if (collaborationRef.current?.doc) {
+          collaborationRef.current.doc.transact(() => {
+            collaborationRef.current.yTimeline.set('currentTime', newTime);
+          });
+        }
+        
+        setTimeout(() => {
+          setHighlightRange(cleanRange);
+          if (codeEditorRef.current && codeEditorRef.current.highlightRange) {
+            codeEditorRef.current.highlightRange(cleanRange);
+          }
+          
+          if (collaborationRef.current) {
+            collaborationRef.current.shareCodeHighlight(cleanRange, timestamp);
+          }
+        }, 150);
+      } else {
+        setHighlightRange(cleanRange);
+        if (codeEditorRef.current && codeEditorRef.current.highlightRange) {
+          codeEditorRef.current.highlightRange(cleanRange);
+        }
+        
+        if (collaborationRef.current) {
+          collaborationRef.current.shareCodeHighlight(cleanRange, null);
+        }
+      }
+    } catch (error) {
+      console.error("Error in handleCodeRangeClick:", error);
+    }
+  };
+
+  const handleTimestampClick = (timestamp) => {
+    if (roomState !== 'ARCHIVED') {
+      return;
+    }
+    
+    if (isPlaying) {
+      setIsPlaying(false);
+      
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+        playIntervalRef.current = null;
+      }
+      
+      try {
+        if (collaborationRef.current?.doc) {
+          collaborationRef.current.doc.transact(() => {
+            collaborationRef.current.yTimeline.set('isPlaying', false);
+            collaborationRef.current.yTimeline.set('playbackController', null);
+            collaborationRef.current.yState.set('operationApplier', null);
+          });
+        }
+      } catch (error) {
+        console.error("Error updating shared state during timestamp click:", error);
+      }
+    }
+    
+    setHighlightRange(null);
+    if (codeEditorRef.current && codeEditorRef.current.clearHighlight) {
+      codeEditorRef.current.clearHighlight();
+    }
+    
+    if (collaborationRef.current) {
+      collaborationRef.current.clearCodeHighlight();
+    }
+    
+    const seekTime = timestamp - startTimeRef.current;
+    setCurrentTime(seekTime);
+    
+    try {
+      if (collaborationRef.current?.doc) {
+        collaborationRef.current.doc.transact(() => {
+          collaborationRef.current.yTimeline.set('controlledBy', null);
+          collaborationRef.current.yTimeline.set('currentTime', seekTime);
+        });
+      }
+    } catch (error) {
+      console.error("Error updating shared state during timestamp click:", error);
+    }
+  };
+
   const togglePlayback = () => {
+    if (!isPlaying) {
+      setHighlightRange(null);
+      if (codeEditorRef.current && codeEditorRef.current.clearHighlight) {
+        codeEditorRef.current.clearHighlight();
+      }
+      
+      if (collaborationRef.current) {
+        collaborationRef.current.clearCodeHighlight();
+      }
+    }
+    
     if (isPlaying) {
       setIsPlaying(false);
       
@@ -545,6 +727,15 @@ const InterviewRoom = () => {
       return;
     }
     
+    setHighlightRange(null);
+    if (codeEditorRef.current && codeEditorRef.current.clearHighlight) {
+      codeEditorRef.current.clearHighlight();
+    }
+    
+    if (collaborationRef.current) {
+      collaborationRef.current.clearCodeHighlight();
+    }
+    
     if (isPlaying) {
       setIsPlaying(false);
       
@@ -574,6 +765,15 @@ const InterviewRoom = () => {
   };
 
   const handleDragStart = () => {
+    setHighlightRange(null);
+    if (codeEditorRef.current && codeEditorRef.current.clearHighlight) {
+      codeEditorRef.current.clearHighlight();
+    }
+    
+    if (collaborationRef.current) {
+      collaborationRef.current.clearCodeHighlight();
+    }
+    
     if (isPlaying) {
       setIsPlaying(false);
       
@@ -651,48 +851,37 @@ const InterviewRoom = () => {
     }
   };
 
-  const addNoteAnchor = () => {
-    if (activeTab === "notes") {
-      notepadRef.current?.setManualTimestamp();
-    } else {
-      console.log("Cannot add note anchor while on the question tab");
-    }
-  };
-
-  const handleTimestampClick = (timestamp) => {
-    if (roomState !== 'ARCHIVED') {
+  const linkCodeToNote = () => {
+    if (activeTab !== "notes") return;
+    
+    const currentNotepadRef = role === 'interviewer' ? notepadRef.current : intervieweeNotepadRef.current;
+    
+    if (!currentNotepadRef) {
+      console.error("Notepad not ready");
       return;
     }
     
-    if (isPlaying) {
-      setIsPlaying(false);
-      
-      if (playIntervalRef.current) {
-        clearInterval(playIntervalRef.current);
-        playIntervalRef.current = null;
-      }
+    if (!selectedRange) {
+      currentNotepadRef.setManualTimestamp();
+      return;
     }
     
-    const seekTime = timestamp - startTimeRef.current;
-    setCurrentTime(seekTime);
-    
     try {
-      if (collaborationRef.current?.doc) {
-        if (isPlaying) {
-          collaborationRef.current.doc.transact(() => {
-            collaborationRef.current.yTimeline.set('isPlaying', false);
-            collaborationRef.current.yTimeline.set('playbackController', null);
-            collaborationRef.current.yState.set('operationApplier', null);
-          });
-        }
-        
-        collaborationRef.current.doc.transact(() => {
-          collaborationRef.current.yTimeline.set('controlledBy', null);
-          collaborationRef.current.yTimeline.set('currentTime', seekTime);
-        });
+      const currentContent = codeEditorRef.current ? codeEditorRef.current.getCurrentContent() : "";
+      const rangeWithContent = {
+        ...selectedRange,
+        contentSnapshot: currentContent
+      };
+      
+      const success = currentNotepadRef.attachCodeRange(rangeWithContent);
+      
+      if (success === true) {
+        console.log("Code linked successfully!");
+      } else if (success === false) {
+        console.log("Code linking was cancelled or failed");
       }
     } catch (error) {
-      console.error("Error updating shared state during timestamp click:", error);
+      console.error("Error linking code:", error);
     }
   };
 
@@ -727,6 +916,10 @@ const InterviewRoom = () => {
     setUploadStatus(status);
   }, []);
 
+  const handleSelectionChange = useCallback((range) => {
+    setSelectedRange(range);
+  }, []);
+
   if (status === "loading") {
     return <div>Loading...</div>;
   }
@@ -755,6 +948,8 @@ const InterviewRoom = () => {
 
   const bothParticipantsPresent = participants.interviewer.present && participants.interviewee.present;
   const bothVideosReady = participants.interviewer.videoReady && participants.interviewee.videoReady;
+
+
 
   return (
     <div className="flex flex-col w-full h-full items-center justify-center">
@@ -806,6 +1001,7 @@ const InterviewRoom = () => {
         />
         <div className="flex flex-row gap-5">
           <CodeEditor
+            ref={codeEditorRef}
             isInterviewActive={roomState === 'ACTIVE'}
             interviewStartTime={startTimeRef.current}
             onOperationsUpdate={handleOperationsUpdate}
@@ -821,6 +1017,8 @@ const InterviewRoom = () => {
             initialOperations={operations}
             initialContent=""
             roomState={roomState}
+            onSelectionChange={handleSelectionChange}
+            highlightRange={highlightRange}
           />
           {role === 'interviewer' ? (
             <InterviewerPanel
@@ -838,15 +1036,25 @@ const InterviewRoom = () => {
               questionContent={archivedQuestionContent}
               activeTab={activeTab}
               onTabChange={setActiveTab}
+              onCodeRangeClick={handleCodeRangeClick}
             />
           ) : (
-            <div className="flex flex-col gap-3 overflow-hidden">
-              <div className="flex flex-row w-[500px] px-8 py-8 border border-gray-200 rounded-lg bg-white">
-                <div className="w-full h-[450px]">
-                  <QuestionEditor collaborationService={collaborationRef.current} />
-                </div>
-              </div>
-            </div>
+            <IntervieweePanel
+              collaborationService={collaborationRef.current}
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              roomState={roomState}
+              startTimeRef={startTimeRef}
+              endTimeRef={endTimeRef}
+              notepadRef={intervieweeNotepadRef}
+              handleTimestampClick={handleTimestampClick}
+              currentTime={currentTime}
+              archivedNotes={intervieweeNotes}
+              archivedNoteLines={intervieweeNoteLines}
+              handleSeek={handleSeek}
+              handleLiveUpdate={handleIntervieweeLiveUpdate}
+              onCodeRangeClick={handleCodeRangeClick}
+            />
           )}
         </div>
         {roomState === 'CREATED' && role === 'interviewer' && (
@@ -874,13 +1082,29 @@ const InterviewRoom = () => {
             >
               End Interview
             </Button>
-            {activeTab ==="notes" && (
+            {activeTab === "notes" && (
               <Button 
-                onClick={addNoteAnchor}
+                onClick={linkCodeToNote}
                 variant="secondary"
                 disabled={activeTab !== "notes"}
+                title={selectedRange ? "Link the selected code to the current note" : "Add a timestamped note"}
               >
-                Add Note Anchor
+                {selectedRange ? "Link Selected Code" : "Add Timestamp"}
+              </Button>
+            )}
+          </div>
+        )}
+        
+        {roomState === 'ARCHIVED' && (
+          <div className='flex flex-row gap-4 justify-start w-full'>
+            {activeTab === "notes" && (
+              <Button 
+                onClick={linkCodeToNote}
+                variant="secondary"
+                disabled={activeTab !== "notes"}
+                title={selectedRange ? "Link the selected code to the current note" : "Add a timestamped note"}
+              >
+                {selectedRange ? "Link Selected Code" : "Add Timestamp"}
               </Button>
             )}
           </div>
@@ -908,7 +1132,7 @@ const InterviewRoom = () => {
       </div>
 
       <div className="flex flex-col gap-2 mt-4 w-full">
-        
+        {}
       </div>
     </div>
   );
