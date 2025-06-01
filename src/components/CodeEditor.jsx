@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useImperativeHandle } from 'react';
+import React, { useState, useRef, useEffect, useImperativeHandle, useCallback } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { EditorView, Decoration, DecorationSet, ViewPlugin, WidgetType } from '@codemirror/view';
@@ -77,6 +77,7 @@ const CodeEditor = ({
   const scrollerRef = useRef(null);
   const [currentSelection, setCurrentSelection] = useState(null);
   const [preservedHighlight, setPreservedHighlight] = useState(null);
+  const [selectedRange, setSelectedRange] = useState(null);
 
   const handleMouseMove = (event) => {
     if (!isInterviewActive || isPlaying || !event.target) return;
@@ -269,10 +270,15 @@ const CodeEditor = ({
     }
   }, [initialOperations, userId, roomState]);
 
+  const handleSelectionChange = useCallback((range) => {
+    console.log("CodeEditor: Selection changed:", range);
+    setSelectedRange(range);
+  }, []);
+
   useEffect(() => {
     if (!editorView) return;
     
-    const handleSelectionChange = () => {
+    const handleInternalSelectionChange = () => {
       try {
         if (!editorView) return;
         
@@ -297,7 +303,7 @@ const CodeEditor = ({
     
     const selectionListener = EditorView.updateListener.of(update => {
       if (update.selectionSet) {
-        handleSelectionChange();
+        handleInternalSelectionChange();
       }
     });
     
@@ -305,9 +311,33 @@ const CodeEditor = ({
       effects: StateEffect.appendConfig.of([selectionListener])
     });
     
+    const editorElement = editorView.dom;
+    
+    const handleMouseUp = () => {
+      setTimeout(() => {
+        handleInternalSelectionChange();
+      }, 10);
+    };
+    
+    const handleKeyUp = (e) => {
+      if (e.shiftKey || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || 
+          e.key === 'ArrowUp' || e.key === 'ArrowDown' || 
+          e.ctrlKey || e.metaKey) {
+        setTimeout(() => {
+          handleInternalSelectionChange();
+        }, 10);
+      }
+    };
+    
+    editorElement.addEventListener('mouseup', handleMouseUp);
+    editorElement.addEventListener('keyup', handleKeyUp);
+    
     return () => {
       setCurrentSelection(null);
-      
+      if (editorElement) {
+        editorElement.removeEventListener('mouseup', handleMouseUp);
+        editorElement.removeEventListener('keyup', handleKeyUp);
+      }
     };
   }, [editorView, onSelectionChange]);
 
@@ -567,10 +597,15 @@ const CodeEditor = ({
               ".cm-highlighted-range": {
                 backgroundColor: "#f3e8ff",
                 border: "1px solid #c084fc"
+              },
+              ".cm-content": {
+                userSelect: "text !important"
+              },
+              ".cm-editor": {
+                userSelect: "text !important"
               }
             }),
-            ...(isInterviewActive && !isPlaying ? 
-                (collaborationRef.current?.getExtensions() || []) : [])
+            ...(collaborationRef.current?.getExtensions() || [])
           ]}
           onChange={handleChange}
           onCreateEditor={(view) => {
@@ -588,6 +623,8 @@ const CodeEditor = ({
             closeBrackets: true,
             defaultKeymap: true,
             historyKeymap: true,
+            allowMultipleSelections: false,
+            searchKeymap: true,
           }}
           style={{ overflow: 'scroll' }}
         />

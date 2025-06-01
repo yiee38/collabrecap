@@ -851,6 +851,10 @@ const InterviewRoom = () => {
     }
   };
 
+  const handleSelectionChange = useCallback((range) => {
+    setSelectedRange(range);
+  }, []);
+
   const linkCodeToNote = () => {
     if (activeTab !== "notes") return;
     
@@ -914,10 +918,6 @@ const InterviewRoom = () => {
     }
     
     setUploadStatus(status);
-  }, []);
-
-  const handleSelectionChange = useCallback((range) => {
-    setSelectedRange(range);
   }, []);
 
   if (status === "loading") {

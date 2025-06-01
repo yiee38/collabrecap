@@ -315,26 +315,42 @@ const TimestampNotepad = ({
         const currentLine = leaf?.parent?.domNode;
         
         if (currentLine) {
+          const existingTimestamp = currentLine.getAttribute('data-timestamp');
+          const existingContent = (currentLine.textContent || '').trim();
           const existingCodeRange = currentLine.getAttribute('data-coderange');
-          if (existingCodeRange) {
-            try {
-              const existingRange = JSON.parse(existingCodeRange);
-              
+          
+          if (existingContent && existingTimestamp) {
+            if (existingCodeRange) {
+              try {
+                const existingRange = JSON.parse(existingCodeRange);
+                setPendingCodeLink({
+                  currentLine,
+                  codeRange,
+                  existingRange,
+                  isEmpty: false,
+                  hasExistingContent: true
+                });
+                setWarningMessage("This line already has content and a code link. Do you want to replace the timestamp and link it to the new code selection?");
+                setIsWarningOpen(true);
+                return true;
+              } catch (e) {
+                console.warn("Error parsing existing code range, proceeding with replacement:", e);
+              }
+            } else {
               setPendingCodeLink({
                 currentLine,
                 codeRange,
-                existingRange,
-                isEmpty: (currentLine.textContent || '').trim() === ''
+                existingRange: null,
+                isEmpty: false,
+                hasExistingContent: true
               });
-              setWarningMessage("Do you want to link this line to a new segment of code?");
+              setWarningMessage("This line already has content and a timestamp. Do you want to update the timestamp and link it to the selected code?");
               setIsWarningOpen(true);
-              return true; 
-            } catch (e) {
-              console.warn("Error parsing existing code range, proceeding with replacement:", e);
+              return true;
             }
           }
           
-          return performCodeLink(currentLine, codeRange, (currentLine.textContent || '').trim() === '');
+          return performCodeLink(currentLine, codeRange, !existingContent);
         } else {
           const codePreview = codeRange.text ? 
             (codeRange.text.length > 30 ? 
@@ -362,7 +378,7 @@ const TimestampNotepad = ({
     }
   }), [lineNumbers.length]);
 
-  const performCodeLink = (currentLine, codeRange, isEmpty) => {
+  const performCodeLink = (currentLine, codeRange, isEmpty, replaceExisting = false) => {
     const quillEditor = quillRef.current.getEditor();
     
     currentLine.setAttribute('data-coderange', JSON.stringify(codeRange));
@@ -393,7 +409,7 @@ const TimestampNotepad = ({
       currentLine.classList.add('code-link');
     }
     
-    if (isEmpty) {
+    if (isEmpty && !replaceExisting) {
       const lineRef = currentLine;
       const codeRangeData = codeRange;
       
@@ -421,8 +437,15 @@ const TimestampNotepad = ({
 
   const handleConfirmCodeLink = () => {
     if (pendingCodeLink) {
-      const { currentLine, codeRange, isEmpty } = pendingCodeLink;
-      performCodeLink(currentLine, codeRange, isEmpty);
+      const { currentLine, codeRange, isEmpty, hasExistingContent } = pendingCodeLink;
+      
+      if (hasExistingContent) {
+        // For existing content, we just update the timestamp and code link without changing the text
+        performCodeLink(currentLine, codeRange, false, true);
+      } else {
+        // For empty lines, use the original behavior
+        performCodeLink(currentLine, codeRange, isEmpty, false);
+      }
     }
     
     setIsWarningOpen(false);
