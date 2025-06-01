@@ -1,6 +1,7 @@
 const { PeerServer } = require('peer');
 
 const isProd = process.env.NODE_ENV === 'production';
+console.log("isProd", isProd);
 
 const origins = [
   `${process.env.NEXT_PUBLIC_CLIENT_URL}`,
