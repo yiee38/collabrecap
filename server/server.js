@@ -117,6 +117,8 @@ class Room {
     this.codeOperations = [];
     this.noteContent = '';
     this.noteLines = [];
+    this.intervieweeNoteContent = '';
+    this.intervieweeNoteLines = [];
     this.questionContent = '';
     this.recordings = [];
     this.uploadStatus = {
@@ -192,6 +194,8 @@ class Room {
       codeOperations: this.codeOperations,
       noteContent: this.noteContent,
       noteLines: this.noteLines,
+      intervieweeNoteContent: this.intervieweeNoteContent,
+      intervieweeNoteLines: this.intervieweeNoteLines,
       questionContent: this.questionContent,
       recordings: this.recordings,
       uploadStatus: this.uploadStatus
@@ -301,6 +305,9 @@ async function initMongoDB() {
               room.codeOperations = archivedRoom.codeOperations;
               room.noteContent = archivedRoom.noteContent;
               room.noteLines = archivedRoom.noteLines;
+              room.intervieweeNoteContent = archivedRoom.intervieweeNoteContent || '';
+              room.intervieweeNoteLines = archivedRoom.intervieweeNoteLines || [];
+              room.questionContent = archivedRoom.questionContent || '';
               activeRooms.set(roomId, room);
             } else {
               socket.emit('error', { 
@@ -396,7 +403,38 @@ async function initMongoDB() {
           }
         }
       });
-    
+
+      socket.on('interviewer:note:add', ({ note, lineNumbers }) => {
+        const { userId, roomId, role } = socket.data;
+        const room = activeRooms.get(roomId);
+        if (room && role === 'interviewer') {
+          console.log('Saving interviewer note:', { content: note, lines: lineNumbers });
+          if (room.updateNote(note, lineNumbers)) {
+          }
+        }
+      });
+
+      socket.on('interviewee:note:add', ({ note, lineNumbers }) => {
+        const { userId, roomId, role } = socket.data;
+        const room = activeRooms.get(roomId);
+        if (room && role === 'interviewee') {
+          console.log('Saving interviewee note:', { content: note, lines: lineNumbers });
+          
+          room.intervieweeNoteContent = note;
+          room.intervieweeNoteLines = lineNumbers;
+          
+          client.db("collabrecap").collection('archivedRooms').updateOne(
+            { id: roomId },
+            { $set: { 
+              intervieweeNoteContent: note,
+              intervieweeNoteLines: lineNumbers 
+            } },
+            { upsert: true }
+          ).catch(err => console.error('Error updating interviewee notes:', err));
+          
+        }
+      });
+
       socket.on('room:peer_id', ({ roomId, peerId }) => {
         if (!roomId || !peerId) return;
         
@@ -487,6 +525,38 @@ async function initMongoDB() {
             console.error('Error updating operations:', error);
           }
         }
+      });
+
+      socket.on('room:update_interviewee_notes', async ({ roomId, noteContent, noteLines, userId }) => {
+        const room = activeRooms.get(roomId);
+        if (room && room.state === 'ARCHIVED') {
+          room.intervieweeNoteContent = noteContent;
+          room.intervieweeNoteLines = noteLines;
+          
+          try {
+            await client.db("collabrecap").collection('archivedRooms').updateOne(
+              { id: roomId },
+              { $set: { 
+                intervieweeNoteContent: noteContent,
+                intervieweeNoteLines: noteLines 
+              } }
+            );
+            console.log(`Updated interviewee notes for room ${roomId}`);
+          } catch (error) {
+            console.error('Error updating interviewee notes:', error);
+          }
+        }
+      });
+
+      socket.on('video:mute:sync', ({ roomId, isMuted, userId }) => {
+        console.log(`User ${userId} sharing mute state in room ${roomId}:`, { isMuted });
+        
+        socket.to(roomId).emit('video:mute:receive', {
+          roomId,
+          isMuted,
+          userId,
+          fromUser: socket.data.role
+        });
       });
 
       socket.on('disconnect', async () => {
